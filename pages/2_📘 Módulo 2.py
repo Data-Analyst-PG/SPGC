@@ -1,30 +1,37 @@
 import streamlit as st
 import pandas as pd
+from supabase import create_client, Client
+
+# Conexión a Supabase
+url = st.secrets["SUPABASE_URL"]
+key = st.secrets["SUPABASE_KEY"]
+supabase: Client = create_client(url, key)
 
 st.title("📘 Módulo 2: Catálogo de Distribución por AREA/GASTO")
 
-# Tipos de distribución válidos
 tipos_distribucion = [
     "Facturación Dlls", "MC", "Tráficos",
     "Empleado hub", "Empleados mv", "XTRALEASE", "Uso Cajas"
 ]
 
-# Si ya existe un resumen de gastos generales generado en el Módulo 1
+# Validamos que venga del Módulo 1
 if 'resumen' in st.session_state:
     resumen = st.session_state['resumen']
+    resumen = resumen[['AREA/GASTO']].drop_duplicates().reset_index(drop=True)
+
+    # Cargar catálogo existente desde Supabase
+    data_supabase = supabase.table("catalogo_distribucion").select("*").execute().data
+    catalogo_existente = pd.DataFrame(data_supabase)
+
+    # Unir resumen con catálogo existente
+    resumen_merged = resumen.merge(
+        catalogo_existente.rename(columns={"area_gasto": "AREA/GASTO", "tipo_distribucion": "TIPO DISTRIBUCIÓN"}),
+        on="AREA/GASTO", how="left"
+    )
 
     st.subheader("Catálogo de Distribución")
-
-    # Crear tabla editable con columna para asignar tipo de distribución
-    if 'catalogo' not in st.session_state:
-        catalogo_df = resumen.copy()
-        catalogo_df["TIPO DISTRIBUCIÓN"] = ""
-        st.session_state['catalogo'] = catalogo_df
-    else:
-        catalogo_df = st.session_state['catalogo']
-
-    edited_catalogo = st.data_editor(
-        catalogo_df,
+    edited_df = st.data_editor(
+        resumen_merged,
         num_rows="dynamic",
         use_container_width=True,
         column_config={
@@ -36,23 +43,15 @@ if 'resumen' in st.session_state:
         }
     )
 
-    # Guardar cambios temporalmente
-    st.session_state['catalogo'] = edited_catalogo
-
-    # Descargar catálogo como Excel
-    def to_excel(df):
-        from io import BytesIO
-        buffer = BytesIO()
-        with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
-            df.to_excel(writer, index=False, sheet_name="Catálogo")
-        return buffer.getvalue()
-
-    st.download_button(
-        "📥 Descargar catálogo en Excel",
-        data=to_excel(edited_catalogo),
-        file_name="catalogo_distribucion.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+    # Botón para guardar nuevos registros y actualizaciones en Supabase
+    if st.button("💾 Guardar en Supabase"):
+        nuevos = edited_df[edited_df["TIPO DISTRIBUCIÓN"].notna()]
+        for _, row in nuevos.iterrows():
+            supabase.table("catalogo_distribucion").upsert({
+                "area_gasto": row["AREA/GASTO"],
+                "tipo_distribucion": row["TIPO DISTRIBUCIÓN"]
+            }).execute()
+        st.success("Catálogo actualizado en Supabase.")
 
 else:
     st.warning("Primero genera el resumen de GASTO GENERAL en el Módulo 1.")
