@@ -11,6 +11,8 @@ if uploaded_file:
     try:
         # Leer hoja específica
         df = pd.read_excel(uploaded_file, sheet_name="DATA MAYO-OCTUBRE")
+        df.columns = df.columns.str.strip().str.upper()
+        st.session_state["df_original"] = df 
 
         # Asegurar nombres consistentes
         df.columns = df.columns.str.strip().str.upper()
