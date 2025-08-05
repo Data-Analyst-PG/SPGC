@@ -26,8 +26,8 @@ st.markdown(f"""
         <img src="data:image/png;base64,{logo_claro_b64}" class="logo-light" style="height: 120px; margin-bottom: 20px;">
         <img src="data:image/png;base64,{logo_oscuro_b64}" class="logo-dark" style="height: 120px; margin-bottom: 20px;">
     </div>
-    <h1 style='text-align: center; color: #003366;'>SPGC</h1>
-    <p style='text-align: center;'>Sistema de Prorratero de Gastos y Costos</p>
+    <h1 style='text-align: center; color: #003366;'>Sistema de Prorratero de Gastos y Costos</h1>
+    <p style='text-align: center;'>Bienvenido al sistema de prorrateo, esta app te permite automatizar el prorrateo de gastos generales por sucursal</p>
     <hr style='margin-top: 20px; margin-bottom: 30px;'>
     <style>
     @media (prefers-color-scheme: dark) {{
@@ -46,5 +46,9 @@ st.info("Selecciona una opción desde el menú lateral para comenzar 🚀")
 # Instrucciones de navegación
 st.subheader("📂 Módulos disponibles")
 st.markdown("""
-- **🧾 Módulo 1: Prorrateo de Gastos Generales
+- **📄 Módulo 1: Subir archivo y generar resumen
+- **📘 Módulo 2: Catálogo de Distribución por AREA/GASTO
+- **📊 Módulo 3: Datos Generales y Porcentajes
+- **🔄 Módulo 4: Prorrateo de Gastos Generales
+- **📘 Módulo 5: Generales e Indirectos
 """)
