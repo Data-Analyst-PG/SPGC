@@ -7,3 +7,4 @@ python-dotenv
 openpyxl
 fpdf
 pillow
+XlsxWriter
