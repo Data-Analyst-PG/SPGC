@@ -30,6 +30,10 @@ else:
         how="left"
     )
 
+    # Normalizar columnas del archivo de porcentajes
+    porcentajes.columns = [col.upper() for col in porcentajes.columns]
+
+
     if gastos_tipo["TIPO DISTRIBUCIÓN"].isna().any():
         st.error("Hay gastos sin tipo de distribución asignado. Revisa el catálogo.")
     else:
@@ -41,11 +45,12 @@ else:
             tipo = row["TIPO DISTRIBUCIÓN"]
             total_cargo = row["CARGOS"]
 
-            if tipo not in porcentajes.columns:
+            tipo_col = tipo.upper()
+            if tipo_col not in porcentajes.columns:
                 st.warning(f"No hay datos de porcentaje para tipo: {tipo}")
                 continue
 
-            for sucursal, porcentaje in porcentajes[tipo].items():
+            for sucursal, porcentaje in porcentajes[tipo_col].items():
                 if porcentaje > 0:
                     distribucion_rows.append({
                         "AREA/GASTO": area,
