@@ -16,7 +16,7 @@ TIPOS_DISTRIBUCION = [
 
 # Activar navegación superior
 st.set_page_config(page_title="Prorrateo de Costos", layout="wide")
-st.navigation([
+st.navigation(label="Menú", links=[
     "Home",
     "Módulo 1: Subir archivo",
     "Módulo 2: Catálogo",
