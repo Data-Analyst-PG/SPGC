@@ -7,7 +7,7 @@ st.title("📘 Módulo 5: Generales e Indirectos")
 if "prorrateo" not in st.session_state or "df_original" not in st.session_state:
     st.warning("Faltan datos. Asegúrate de haber ejecutado los módulos 1 y 4.")
 else:
-    df_prorrateo = st.session_state["prorrateo"]
+    prorrateo_df = st.session_state["prorrateo"]
     df_original = st.session_state["df_original"]
 
     # Gasto General (suma de lo prorrateado por sucursal)
