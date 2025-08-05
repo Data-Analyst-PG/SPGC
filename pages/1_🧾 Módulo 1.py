@@ -26,6 +26,9 @@ if uploaded_file:
             .sort_values(by="CARGOS", ascending=False)
         )
 
+        # Guardar en session_state para el módulo 2
+        st.session_state['resumen'] = resumen
+
         st.success("Resumen generado con éxito.")
         st.dataframe(resumen, use_container_width=True)
 
