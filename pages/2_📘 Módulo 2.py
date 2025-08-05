@@ -35,6 +35,7 @@ if 'resumen' in st.session_state:
         resumen_merged["TIPO DISTRIBUCIÓN"] = None
 
     st.subheader("Catálogo de Distribución")
+    resumen_merged = resumen_merged.sort_values(by=["TIPO DISTRIBUCIÓN", "AREA/GASTO"], na_position="first").reset_index(drop=True)
     edited_df = st.data_editor(
         resumen_merged,
         num_rows="dynamic",
