@@ -24,10 +24,15 @@ if 'resumen' in st.session_state:
     catalogo_existente = pd.DataFrame(data_supabase)
 
     # Unir resumen con catálogo existente
-    resumen_merged = resumen.merge(
-        catalogo_existente.rename(columns={"area_gasto": "AREA/GASTO", "tipo_distribucion": "TIPO DISTRIBUCIÓN"}),
-        on="AREA/GASTO", how="left"
-    )
+    if not catalogo_existente.empty:
+        catalogo_existente = catalogo_existente.rename(columns={
+            "area_gasto": "AREA/GASTO",
+            "tipo_distribucion": "TIPO DISTRIBUCIÓN"
+        })
+        resumen_merged = resumen.merge(catalogo_existente, on="AREA/GASTO", how="left")
+    else:
+        resumen_merged = resumen.copy()
+        resumen_merged["TIPO DISTRIBUCIÓN"] = None
 
     st.subheader("Catálogo de Distribución")
     edited_df = st.data_editor(
