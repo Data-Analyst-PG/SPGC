@@ -12,7 +12,7 @@ else:
 
     # Gasto General (suma de lo prorrateado por sucursal)
     gasto_general = (
-        prorrateo
+        prorrateo_df
         .groupby("SUCURSAL", as_index=False)["CARGO ASIGNADO"]
         .sum()
         .rename(columns={"CARGO ASIGNADO": "GASTO GENERAL"})
