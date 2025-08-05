@@ -27,7 +27,7 @@ st.markdown(f"""
         <img src="data:image/png;base64,{logo_oscuro_b64}" class="logo-dark" style="height: 120px; margin-bottom: 20px;">
     </div>
     <h1 style='text-align: center; color: #003366;'>Sistema de Prorratero de Gastos y Costos</h1>
-    <p style='text-align: center;'>Bienvenido al sistema de prorrateo, esta app te permite automatizar el prorrateo de gastos generales por sucursal</p>
+    <p style='text-align: center;'>Bienvenido esta app te permite automatizar el prorrateo de gastos generales por sucursal</p>
     <hr style='margin-top: 20px; margin-bottom: 30px;'>
     <style>
     @media (prefers-color-scheme: dark) {{
