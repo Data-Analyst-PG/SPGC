@@ -4,10 +4,10 @@ import pandas as pd
 st.title("📘 Módulo 5: Generales e Indirectos")
 
 # Validar inputs
-if "prorrateo_df" not in st.session_state or "df_original" not in st.session_state:
+if "prorrateo" not in st.session_state or "df_original" not in st.session_state:
     st.warning("Faltan datos. Asegúrate de haber ejecutado los módulos 1 y 4.")
 else:
-    prorrateo_df = st.session_state["prorrateo_df"]
+    prorrateo_df = st.session_state["prorrateo"]
     df_original = st.session_state["df_original"]
 
     # Gasto General (suma de lo prorrateado por sucursal)
