@@ -10,7 +10,7 @@ uploaded_file = st.file_uploader("Sube el archivo con la hoja 'DATA MAYO-OCTUBRE
 if uploaded_file:
     try:
         # Leer hoja específica
-        df = pd.read_excel(uploaded_file, sheet_name="DATA MAYO-OCTUBRE")
+        df = pd.read_excel
         df.columns = df.columns.str.strip().str.upper()
         st.session_state["df_original"] = df 
 
@@ -23,7 +23,7 @@ if uploaded_file:
         # Agrupar por AREA/GASTO y sumar los CARGOS
         resumen = (
             gasto_general
-            .groupby("AREA/GASTO", as_index=False)["CARGOS"]
+            .groupby("AREA/CUENTA", as_index=False)["CARGOS"]
             .sum()
             .sort_values(by="CARGOS", ascending=False)
         )
