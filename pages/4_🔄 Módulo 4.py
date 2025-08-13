@@ -23,10 +23,10 @@ else:
     # Unir resumen con catálogo
     gastos_tipo = resumen.merge(
         catalogo_df.rename(columns={
-            "area_gasto": "AREA/GASTO",
+            "area_gasto": "AREA/CUENTA",
             "tipo_distribucion": "TIPO DISTRIBUCIÓN"
         }),
-        on="AREA/GASTO",
+        on="AREA/CUENTA",
         how="left"
     )
 
@@ -41,7 +41,7 @@ else:
         distribucion_rows = []
 
         for _, row in gastos_tipo.iterrows():
-            area = row["AREA/GASTO"]
+            area = row["AREA/CUENTA"]
             tipo = row["TIPO DISTRIBUCIÓN"]
             total_cargo = row["CARGOS"]
 
@@ -53,7 +53,7 @@ else:
             for sucursal, porcentaje in porcentajes[tipo_col].items():
                 if porcentaje > 0:
                     distribucion_rows.append({
-                        "AREA/GASTO": area,
+                        "AREA/CUENTA": area,
                         "TIPO DISTRIBUCIÓN": tipo,
                         "SUCURSAL": sucursal,
                         "CARGO ASIGNADO": round(total_cargo * porcentaje, 2)
