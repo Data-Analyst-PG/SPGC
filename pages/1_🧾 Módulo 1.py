@@ -5,7 +5,7 @@ from io import BytesIO
 st.title("🧾 Módulo 1: Prorrateo de Gastos Generales")
 
 # Subir archivo Excel
-uploaded_file = st.file_uploader("Sube el archivo con la hoja 'DATA MAYO-OCTUBRE'", type=["xlsx"])
+uploaded_file = st.file_uploader("Sube el archivo", type=["xlsx"])
 
 if uploaded_file:
     try:
