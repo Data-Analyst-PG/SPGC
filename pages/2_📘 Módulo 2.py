@@ -17,7 +17,7 @@ tipos_distribucion = [
 # Validamos que venga del Módulo 1
 if 'resumen' in st.session_state:
     resumen = st.session_state['resumen']
-    resumen = resumen[['AREA/GASTO']].drop_duplicates().reset_index(drop=True)
+    resumen = resumen[['AREA/CUENTA']].drop_duplicates().reset_index(drop=True)
 
     # Cargar catálogo existente desde Supabase
     data_supabase = supabase.table("catalogo_distribucion").select("*").execute().data
@@ -26,16 +26,16 @@ if 'resumen' in st.session_state:
     # Unir resumen con catálogo existente
     if not catalogo_existente.empty:
         catalogo_existente = catalogo_existente.rename(columns={
-            "area_gasto": "AREA/GASTO",
+            "area_gasto": "AREA/CUENTA",
             "tipo_distribucion": "TIPO DISTRIBUCIÓN"
         })
-        resumen_merged = resumen.merge(catalogo_existente, on="AREA/GASTO", how="left")
+        resumen_merged = resumen.merge(catalogo_existente, on="AREA/CUENTA", how="left")
     else:
         resumen_merged = resumen.copy()
         resumen_merged["TIPO DISTRIBUCIÓN"] = None
 
     st.subheader("Catálogo de Distribución")
-    resumen_merged = resumen_merged.sort_values(by=["TIPO DISTRIBUCIÓN", "AREA/GASTO"], na_position="first").reset_index(drop=True)
+    resumen_merged = resumen_merged.sort_values(by=["TIPO DISTRIBUCIÓN", "AREA/CUENTA"], na_position="first").reset_index(drop=True)
     edited_df = st.data_editor(
         resumen_merged,
         num_rows="dynamic",
