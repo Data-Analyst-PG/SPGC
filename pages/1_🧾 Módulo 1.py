@@ -5,12 +5,12 @@ from io import BytesIO
 st.title("🧾 Módulo 1: Prorrateo de Gastos Generales")
 
 # Subir archivo Excel
-uploaded_file = st.file_uploader("Sube el archivo", type=["xlsx"])
+uploaded_file = st.file_uploader("Sube el archivo con la hoja 'PASO 1'", type=["xlsx"])
 
 if uploaded_file:
     try:
         # Leer hoja específica
-        df = pd.read_excel
+        df = pd.read_excel(uploaded_file, sheet_name="PASO 1")
         df.columns = df.columns.str.strip().str.upper()
         st.session_state["df_original"] = df 
 
