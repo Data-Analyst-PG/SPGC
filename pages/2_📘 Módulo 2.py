@@ -26,7 +26,7 @@ if 'resumen' in st.session_state:
     # Unir resumen con catálogo existente
     if not catalogo_existente.empty:
         catalogo_existente = catalogo_existente.rename(columns={
-            "area_gasto": "AREA/CUENTA",
+            "area_cuenta": "AREA/CUENTA",
             "tipo_distribucion": "TIPO DISTRIBUCIÓN"
         })
         resumen_merged = resumen.merge(catalogo_existente, on="AREA/CUENTA", how="left")
@@ -54,7 +54,7 @@ if 'resumen' in st.session_state:
         nuevos = edited_df[edited_df["TIPO DISTRIBUCIÓN"].notna()]
         for _, row in nuevos.iterrows():
             supabase.table("catalogo_distribucion").upsert({
-                "area_gasto": row["AREA/GASTO"],
+                "area_cuenta": row["AREA/CUENTA"],
                 "tipo_distribucion": row["TIPO DISTRIBUCIÓN"]
             }).execute()
         st.success("Catálogo actualizado en Supabase.")
