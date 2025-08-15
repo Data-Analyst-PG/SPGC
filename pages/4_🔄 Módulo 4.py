@@ -23,7 +23,7 @@ else:
     # Unir resumen con catálogo
     gastos_tipo = resumen.merge(
         catalogo_df.rename(columns={
-            "area_gasto": "AREA/CUENTA",
+            "area_cuenta": "AREA/CUENTA",
             "tipo_distribucion": "TIPO DISTRIBUCIÓN"
         }),
         on="AREA/CUENTA",
