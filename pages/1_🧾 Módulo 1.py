@@ -1,8 +1,19 @@
 import streamlit as st
 import pandas as pd
 from io import BytesIO
+from supabase import create_client, Client
+from datetime import date
+
+# --- CONFIGURACIÓN SUPABASE ---
+url = st.secrets["supabase"]["url"]
+key = st.secrets["supabase"]["key"]
+supabase: Client = create_client(url, key)
 
 st.title("🧾 Módulo 1: Prorrateo de Gastos Generales")
+
+# ================================
+# Subir archivo y generar resumen
+# ================================
 
 # Subir archivo Excel
 uploaded_file = st.file_uploader("Sube el archivo con la hoja 'PASO 1'", type=["xlsx"])
@@ -50,3 +61,57 @@ if uploaded_file:
 
     except Exception as e:
         st.error(f"Error procesando el archivo: {e}")
+
+# ========================================
+# Captura de Tráfico y Fecha por Sucursal
+# ========================================
+
+st.subheader("🚛 Captura de Tráfico por Sucursal")
+
+# Lista fija de sucursales (precargadas)
+sucursales = [
+    "CAR-GAR", "CHICAGO", "CONSOLIDADO", "DALLAS", "GUADALAJARA",
+    "LEON", "LINCOLN LOGISTICS", "MG HAULERS", "MONTERREY",
+    "NUEVO LAREDO", "QUERETARO", "ROLANDO ALFARO"
+]
+
+# Fecha global que se aplicará a todos los registros
+fecha_global = st.date_input("📅 Fecha de tráfico", value=date.today())
+
+# Crear un DataFrame editable para capturar los números de tráfico
+traficos_df = pd.DataFrame({
+    "Sucursal": sucursales,
+    "Tráfico": ["" for _ in sucursales]
+})
+
+st.markdown("### ✏️ Captura los números de tráfico")
+edit_df = st.data_editor(
+    traficos_df,
+    use_container_width=True,
+    num_rows="fixed",
+    key="trafico_editor"
+)
+
+# Botón para guardar en Supabase
+if st.button("💾 Guardar en Supabase"):
+    try:
+        # Validar que no haya vacíos
+        if any(edit_df["Tráfico"] == ""):
+            st.warning("Completa todos los números de tráfico antes de guardar.")
+        else:
+            # Agregar la fecha global
+            edit_df["Fecha"] = fecha_global
+
+            # Insertar en Supabase
+            data = edit_df.to_dict(orient="records")
+            res = supabase.table("viajes_distribucion").insert(data).execute()
+
+            if res.data:
+                st.success("✅ Tráficos guardados correctamente en Supabase.")
+            else:
+                st.warning("No se insertaron datos. Verifica la conexión o duplicados.")
+
+    except Exception as e:
+        st.error(f"Error al guardar en Supabase: {e}")
+
+st.divider()
