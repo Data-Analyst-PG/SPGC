@@ -1,5 +1,8 @@
 import streamlit as st
 import pandas as pd
+from io import BytesIO
+from supabase import create_client, Client
+from datetime import date
 
 st.title("🔄 Módulo 4: Gasto General + Costos por Sucursal (con Tráfico/Fecha)")
 
@@ -18,10 +21,9 @@ porcentajes.columns = [str(c).upper() for c in porcentajes.columns]
 if "CONCEPTO" not in df_original.columns:
     df_original["CONCEPTO"] = ""
 
-# ---------- Supabase: catálogo y viajes  ----------
-from supabase import create_client
-url = st.secrets["supabase"]["url"]
-key = st.secrets["supabase"]["key"]
+# --- CONFIGURACIÓN SUPABASE ---
+url = st.secrets["SUPABASE_URL"]
+key = st.secrets["SUPABASE_KEY"]
 supabase = create_client(url, key)
 
 # Catálogo (AREA/CUENTA -> TIPO DISTRIBUCIÓN)
