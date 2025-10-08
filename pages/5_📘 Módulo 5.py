@@ -22,9 +22,8 @@ col_suc = "SUCURSAL"
 col_val = "CARGO ASIGNADO"
 col_tipo = "TIPO COSTO"
 
-# ---------- 1) Comunes por sucursal (separados) ----------
-# En el prorrateo, los Gasto General traen TIPO COSTO según IN/EX; los directos traen COSTO INDIRECTO.
-comunes = prorr[prorr[col_tipo].isin(["COMUN INDIRECTO", "COMUN EXTERNO"])]
+# 1) Comunes por sucursal (ya vienen con nombres finales)
+comunes = prorr[prorr[col_tipo].isin(["COMUN INTERNO", "COMUN EXTERNO"])]
 
 pivot_comunes = (
     comunes.pivot_table(
@@ -34,14 +33,9 @@ pivot_comunes = (
         aggfunc="sum",
         fill_value=0.0,
     )
-    .rename(columns={
-        "COMUN INDIRECTO": "COMUN INTERNO",
-        "COMUN EXTERNO": "COMUN EXTERNO",
-    })
     .reset_index()
 )
 
-# Asegurar ambas columnas aunque falte alguna categoría
 for expected in ["COMUN INTERNO", "COMUN EXTERNO"]:
     if expected not in pivot_comunes.columns:
         pivot_comunes[expected] = 0.0
