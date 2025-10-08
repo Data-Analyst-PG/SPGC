@@ -95,22 +95,32 @@ edit_df = st.data_editor(
 # Botón para guardar en Supabase
 if st.button("💾 Guardar en Supabase"):
     try:
-        # Validar que no haya vacíos
-        if any(edit_df["Tráfico"] == ""):
+        df_to_save = edit_df.copy()
+
+        # Validaciones básicas
+        faltan = df_to_save["Tráfico"].astype(str).str.strip().eq("")
+        if faltan.any():
             st.warning("Completa todos los números de tráfico antes de guardar.")
         else:
-            # Agregar la fecha global
-            edit_df["Fecha"] = fecha_global
+            # Normaliza texto y FECHA -> string ISO (YYYY-MM-DD)
+            df_to_save["Sucursal"] = df_to_save["Sucursal"].astype(str).str.strip()
+            df_to_save["Tráfico"]  = df_to_save["Tráfico"].astype(str).str.strip()
+            df_to_save["Fecha"]    = pd.to_datetime(fecha_global).strftime("%Y-%m-%d")
 
-            # Insertar en Supabase
-            data = edit_df.to_dict(orient="records")
-            res = supabase.table("viajes_distribucion").insert(data).execute()
+            # Renombra a las columnas reales de la tabla
+            payload = (
+                df_to_save[["Sucursal", "Tráfico", "Fecha"]]
+                .rename(columns={"Tráfico": "Trafico"})
+                .to_dict(orient="records")
+            )
 
-            if res.data:
-                st.success("✅ Tráficos guardados correctamente en Supabase.")
-            else:
-                st.warning("No se insertaron datos. Verifica la conexión o duplicados.")
+            # Inserta (o usa upsert si quieres evitar duplicados Sucursal+Fecha)
+            res = supabase.table("viajes_distribucion").insert(payload).execute()
+            # Si prefieres actualizar/enlazar:
+            # res = supabase.table("viajes_distribucion") \
+            #     .upsert(payload, on_conflict="Sucursal,Fecha").execute()
 
+            st.success(f"✅ Tráficos guardados ({len(payload)} filas).")
     except Exception as e:
         st.error(f"Error al guardar en Supabase: {e}")
 
