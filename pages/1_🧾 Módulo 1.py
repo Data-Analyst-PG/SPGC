@@ -5,9 +5,9 @@ from supabase import create_client, Client
 from datetime import date
 
 # --- CONFIGURACIÓN SUPABASE ---
-url = st.secrets["supabase"]["url"]
-key = st.secrets["supabase"]["key"]
-supabase: Client = create_client(url, key)
+url = st.secrets["SUPABASE_URL"]
+key = st.secrets["SUPABASE_KEY"]
+supabase = create_client(url, key)
 
 st.title("🧾 Módulo 1: Prorrateo de Gastos Generales")
 
