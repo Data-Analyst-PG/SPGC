@@ -91,7 +91,7 @@ gasto_general = df_original[df_original["SUCURSAL"].str.upper().eq("GASTO GENERA
 def tipo_costo_por_concepto(concepto: str) -> str:
     c = str(concepto).strip().upper()
     if c.startswith("IN"):
-        return "COMUN INDIRECTO"
+        return "COMUN INTERNO"
     if c.startswith("EX"):
         return "COMUN EXTERNO"
     return "COSTO INDIRECTO"
