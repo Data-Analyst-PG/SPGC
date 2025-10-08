@@ -72,4 +72,18 @@ def exportar_excel():
     from io import BytesIO
     buffer = BytesIO()
     with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
-        pivot_comunes[[col_s
+        pivot_comunes[[col_suc, "COMUN INTERNO", "COMUN EXTERNO"]].to_excel(
+            writer, sheet_name="Generales", index=False
+        )
+        indirectos.to_excel(writer, sheet_name="Indirectos", index=False)
+        final[[col_suc, "COMUN INTERNO", "COMUN EXTERNO", "INDIRECTO", "TOTAL"]].to_excel(
+            writer, sheet_name="Consolidado", index=False
+        )
+    return buffer.getvalue()
+
+st.download_button(
+    "📥 Descargar Excel (Generales/Indirectos/Consolidado)",
+    data=exportar_excel(),
+    file_name="generales_indirectos_consolidado.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+)
