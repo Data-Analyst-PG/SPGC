@@ -1,58 +1,81 @@
 import streamlit as st
 import pandas as pd
 
-st.title("📘 Módulo 5: Generales e Indirectos")
+st.title("📘 Módulo 5: Generales (Comunes separados) e Indirectos")
 
-# Validar inputs
-if "prorrateo" not in st.session_state or "df_original" not in st.session_state:
-    st.warning("Faltan datos. Asegúrate de haber ejecutado los módulos 1 y 4.")
-else:
-    prorrateo_df = st.session_state["prorrateo"]
-    df_original = st.session_state["df_original"]
+# --- Obtener el prorrateo completo del Módulo 4 ---
+key_candidates = ["prorrateo_completo", "prorrateo"]
+prorr_key = next((k for k in key_candidates if k in st.session_state), None)
 
-    # Gasto General (suma de lo prorrateado por sucursal)
-    gasto_general = (
-        prorrateo_df
-        .groupby("SUCURSAL", as_index=False)["CARGO ASIGNADO"]
-        .sum()
-        .rename(columns={"CARGO ASIGNADO": "GASTO GENERAL"})
+if prorr_key is None or "df_original" not in st.session_state:
+    st.warning("Faltan datos. Asegúrate de haber ejecutado el Módulo 4 y tener df_original.")
+    st.stop()
+
+prorr = st.session_state[prorr_key].copy()
+df_original = st.session_state["df_original"].copy()
+
+# Normalización mínima
+for df in (prorr, df_original):
+    df.columns = df.columns.str.upper()
+
+col_suc = "SUCURSAL"
+col_val = "CARGO ASIGNADO"
+col_tipo = "TIPO COSTO"
+
+# ---------- 1) Comunes por sucursal (separados) ----------
+# En el prorrateo, los Gasto General traen TIPO COSTO según IN/EX; los directos traen COSTO INDIRECTO.
+comunes = prorr[prorr[col_tipo].isin(["COMUN INDIRECTO", "COMUN EXTERNO"])]
+
+pivot_comunes = (
+    comunes.pivot_table(
+        index=col_suc,
+        columns=col_tipo,
+        values=col_val,
+        aggfunc="sum",
+        fill_value=0.0,
     )
+    .rename(columns={
+        "COMUN INDIRECTO": "COMUN INTERNO",
+        "COMUN EXTERNO": "COMUN EXTERNO",
+    })
+    .reset_index()
+)
 
-    st.subheader("📌 Gasto General por Sucursal (prorrateado)")
-    st.dataframe(gasto_general, use_container_width=True)
+# Asegurar ambas columnas aunque falte alguna categoría
+for expected in ["COMUN INTERNO", "COMUN EXTERNO"]:
+    if expected not in pivot_comunes.columns:
+        pivot_comunes[expected] = 0.0
 
-    # Indirectos (suma directa de cargos que NO son GASTO GENERAL)
-    df_original.columns = df_original.columns.str.upper()
-    indirectos = (
-        df_original[df_original["SUCURSAL"] != "GASTO GENERAL"]
-        .groupby("SUCURSAL", as_index=False)["CARGOS"]
-        .sum()
-        .rename(columns={"CARGOS": "INDIRECTOS"})
-    )
+st.subheader("📌 Comunes por sucursal")
+st.dataframe(pivot_comunes[[col_suc, "COMUN INTERNO", "COMUN EXTERNO"]], use_container_width=True)
 
-    st.subheader("📌 Indirectos por Sucursal (del archivo original)")
-    st.dataframe(indirectos, use_container_width=True)
+# ---------- 2) Indirectos por sucursal ----------
+# Suma todo lo etiquetado como COSTO INDIRECTO (incluye directos y Gasto General cuyo concepto no inicia IN/EX)
+indirectos = (
+    prorr[prorr[col_tipo] == "COSTO INDIRECTO"]
+    .groupby(col_suc, as_index=False)[col_val]
+    .sum()
+    .rename(columns={col_val: "INDIRECTO"})
+)
 
-    # Unir ambas tablas para una vista consolidada
-    final = pd.merge(gasto_general, indirectos, on="SUCURSAL", how="outer").fillna(0)
-    final["TOTAL"] = final["GASTO GENERAL"] + final["INDIRECTOS"]
+st.subheader("📌 Indirectos por sucursal")
+st.dataframe(indirectos, use_container_width=True)
 
-    st.subheader("📊 Consolidado Final")
-    st.dataframe(final, use_container_width=True)
+# ---------- 3) Consolidado: comunes separados + indirecto + total ----------
+final = (
+    pivot_comunes.merge(indirectos, on=col_suc, how="outer")
+    .fillna(0.0)
+)
 
-    # Descargar
-    def exportar_excel():
-        from io import BytesIO
-        buffer = BytesIO()
-        with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
-            gasto_general.to_excel(writer, sheet_name="Gasto General", index=False)
-            indirectos.to_excel(writer, sheet_name="Indirectos", index=False)
-            final.to_excel(writer, sheet_name="Consolidado", index=False)
-        return buffer.getvalue()
+final["TOTAL"] = final["COMUN INTERNO"] + final["COMUN EXTERNO"] + final["INDIRECTO"]
 
-    st.download_button(
-        "📥 Descargar Excel con resultados",
-        data=exportar_excel(),
-        file_name="generales_y_indirectos.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+st.subheader("📊 Consolidado final")
+st.dataframe(final[[col_suc, "COMUN INTERNO", "COMUN EXTERNO", "INDIRECTO", "TOTAL"]],
+             use_container_width=True)
+
+# ---------- 4) Exportar a Excel ----------
+def exportar_excel():
+    from io import BytesIO
+    buffer = BytesIO()
+    with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
+        pivot_comunes[[col_s
