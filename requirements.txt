@@ -1,10 +1,11 @@
 streamlit>=1.47
-pandas
+pandas>=2.2.0
 numpy
 supabase>=2.5.0
 python-dotenv
 openpyxl
-fpdf
-Pillow
+xlrd==1.2.0
 XlsxWriter
-pyxlsb
+Pillow
+fpdf
+pyxlsb 
