@@ -321,6 +321,10 @@ def process_report(df_raw):
         mask_nonzero = (df[amt_cols].fillna(0).abs().sum(axis=1) > 0)
         df = df.loc[mask_nonzero].reset_index(drop=True)
 
+    # 7.1) Eliminar filas que son "Sumas Totales" explícitas
+    if col_cc in df.columns:
+        df = df[~df[col_cc].astype(str).str.contains(r"sumas\s*totales", case=False, na=False)]
+
     # 8) Filas totalmente vacías (ignorando Cuenta) → fuera
     non_cuenta_cols = [c for c in df.columns if c != "Cuenta"]
     def _row_is_empty(series):
