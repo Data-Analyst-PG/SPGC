@@ -18,52 +18,62 @@ st.caption(
 # Detecta por firma binaria: ZIP -> xlsx/xlsm; CFB -> xls
 def _detect_excel_format(fileobj) -> str:
     """
-    Devuelve 'xlsx' o 'xls' según el contenido real, sin confiar en la extensión.
-    No consume el stream (lo regresa a posición 0).
+    Devuelve 'xlsx' | 'xls' | 'html' | 'unknown' según contenido real.
+    No consume el stream.
     """
     pos = fileobj.tell()
-    head = fileobj.read(8)
+    head = fileobj.read(1024)  # leemos un poco más para detectar HTML
     fileobj.seek(pos)
-    if head.startswith(b'PK'):              # ZIP → .xlsx / .xlsm
+
+    # ZIP → .xlsx /.xlsm
+    if head.startswith(b'PK'):
         return "xlsx"
-    if head.startswith(b'\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1'):  # CFB → .xls
+
+    # CFBF → .xls
+    if head.startswith(b'\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1'):
         return "xls"
+
+    # HTML → muchos exportadores lo guardan como .xls
+    h = head.lstrip().lower()
+    if h.startswith(b'<!doctype html') or h.startswith(b'<html') or h.startswith(b'<table'):
+        return "html"
+
     return "unknown"
 
 def _read_excel_any(uploaded_file):
     """
-    Lee .xls / .xlsx de forma segura:
-    - Detecta por contenido (no por extensión)
-    - Usa el motor correcto
-    - Reintenta con .seek(0) entre motores
+    Lee .xlsx/.xls/.html (tabla) de forma robusta.
     """
-    # Normaliza a BytesIO para poder inspeccionar
+    # normalizamos a BytesIO
     if hasattr(uploaded_file, "read"):
         data = uploaded_file.read()
         bio = io.BytesIO(data)
     else:
-        # ya es bytes
         bio = io.BytesIO(uploaded_file)
 
     kind = _detect_excel_format(bio)
 
-    # xlsx/xlsm → openpyxl
     if kind == "xlsx":
         bio.seek(0)
         return pd.read_excel(bio, sheet_name=0, engine="openpyxl", header=None)
 
-    # xls → xlrd (requiere xlrd que soporte .xls)
     if kind == "xls":
         bio.seek(0)
         try:
             return pd.read_excel(bio, sheet_name=0, engine="xlrd", header=None)
-        except Exception as e_xlrd:
-            # Como último recurso, intentamos que pandas escoja automáticamente
-            # (algunas instalaciones empaquetan motores alternativos)
+        except Exception:
             bio.seek(0)
             return pd.read_excel(bio, sheet_name=0, header=None)
 
-    # Desconocido: probar primero openpyxl (ZIP), luego xlrd (CFB)
+    if kind == "html":
+        bio.seek(0)
+        # toma la primera tabla del HTML
+        tables = pd.read_html(bio, header=None, flavor="bs4")  # requiere bs4 + lxml/html5lib
+        if not tables:
+            raise ValueError("No se encontraron tablas en el HTML.")
+        return tables[0]
+
+    # Desconocido: probamos xlsx y luego xls
     bio.seek(0)
     try:
         return pd.read_excel(bio, sheet_name=0, engine="openpyxl", header=None)
@@ -145,7 +155,11 @@ def process_report(df_raw):
                 pass
     return df_clean
 
-uploaded = st.file_uploader("Sube el archivo (.xls o .xlsx)", type=["xls", "xlsx"], accept_multiple_files=False)
+uploaded = st.file_uploader(
+    "Sube el archivo (.xls, .xlsx o .html)",
+    type=["xls", "xlsx", "html", "htm"],
+    accept_multiple_files=False
+)
 
 if uploaded is None:
     st.info("Esperando archivo…")
