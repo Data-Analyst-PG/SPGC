@@ -4,7 +4,7 @@ numpy
 supabase>=2.5.0
 python-dotenv
 openpyxl
-xlrd==1.2.0
+xlrd==2.0.1
 XlsxWriter
 Pillow
 fpdf
