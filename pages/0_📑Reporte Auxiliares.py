@@ -15,19 +15,61 @@ st.caption(
     "La página eliminará encabezados/sumarios, propagará la cuenta y te dará un archivo limpio."
 )
 
+# Detecta por firma binaria: ZIP -> xlsx/xlsm; CFB -> xls
+def _detect_excel_format(fileobj) -> str:
+    """
+    Devuelve 'xlsx' o 'xls' según el contenido real, sin confiar en la extensión.
+    No consume el stream (lo regresa a posición 0).
+    """
+    pos = fileobj.tell()
+    head = fileobj.read(8)
+    fileobj.seek(pos)
+    if head.startswith(b'PK'):              # ZIP → .xlsx / .xlsm
+        return "xlsx"
+    if head.startswith(b'\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1'):  # CFB → .xls
+        return "xls"
+    return "unknown"
+
 def _read_excel_any(uploaded_file):
-    name = getattr(uploaded_file, "name", "")
-    if name.lower().endswith(".xls"):
-        # intentar con xlrd
-        try:
-            return pd.read_excel(uploaded_file, sheet_name=0, engine="xlrd", header=None)
-        except Exception:
-            # fallback con openpyxl
-            uploaded_file.seek(0)
-            return pd.read_excel(uploaded_file, sheet_name=0, engine="openpyxl", header=None)
+    """
+    Lee .xls / .xlsx de forma segura:
+    - Detecta por contenido (no por extensión)
+    - Usa el motor correcto
+    - Reintenta con .seek(0) entre motores
+    """
+    # Normaliza a BytesIO para poder inspeccionar
+    if hasattr(uploaded_file, "read"):
+        data = uploaded_file.read()
+        bio = io.BytesIO(data)
     else:
-        # para .xlsx u otros modernos
-        return pd.read_excel(uploaded_file, sheet_name=0, engine="openpyxl", header=None)
+        # ya es bytes
+        bio = io.BytesIO(uploaded_file)
+
+    kind = _detect_excel_format(bio)
+
+    # xlsx/xlsm → openpyxl
+    if kind == "xlsx":
+        bio.seek(0)
+        return pd.read_excel(bio, sheet_name=0, engine="openpyxl", header=None)
+
+    # xls → xlrd (requiere xlrd que soporte .xls)
+    if kind == "xls":
+        bio.seek(0)
+        try:
+            return pd.read_excel(bio, sheet_name=0, engine="xlrd", header=None)
+        except Exception as e_xlrd:
+            # Como último recurso, intentamos que pandas escoja automáticamente
+            # (algunas instalaciones empaquetan motores alternativos)
+            bio.seek(0)
+            return pd.read_excel(bio, sheet_name=0, header=None)
+
+    # Desconocido: probar primero openpyxl (ZIP), luego xlrd (CFB)
+    bio.seek(0)
+    try:
+        return pd.read_excel(bio, sheet_name=0, engine="openpyxl", header=None)
+    except Exception:
+        bio.seek(0)
+        return pd.read_excel(bio, sheet_name=0, engine="xlrd", header=None)
 
 def _guess_header(df):
     header_idx = None
