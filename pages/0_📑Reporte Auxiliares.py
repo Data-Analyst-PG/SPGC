@@ -231,9 +231,9 @@ def process_report(df_raw):
     df = df_raw.copy()
     if len(df) > 0:
         df = df.iloc[1:].reset_index(drop=True)
-    df, _ = _guess_header(df)
     df.insert(1, "Aux1", "")
     df.insert(2, "Aux2", "")
+    df, _ = _guess_header(df)
     df.insert(0, "Cuenta", "")
     cuenta_pat = re.compile(r"^\s*\d{3}-\d{2}-\d{2}-\d{3}-\d{2}-\d{3}-\d{4}\s+-\s+.+", re.IGNORECASE)
     col_cc = _find_cuenta_concepto_col(df.columns)
