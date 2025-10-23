@@ -41,29 +41,29 @@ def _detect_excel_format(fileobj) -> str:
     return "unknown"
 
 def _read_excel_any(uploaded_file):
-    """
-    Lee .xlsx/.xls/.html (tabla) de forma robusta.
-    """
-    # normalizamos a BytesIO
-    if hasattr(uploaded_file, "read"):
-        data = uploaded_file.read()
-        bio = io.BytesIO(data)
-    else:
-        bio = io.BytesIO(uploaded_file)
+    data = uploaded_file.read()
+    bio = io.BytesIO(data)
+    head = data[:2048].lstrip().lower()
 
-    kind = _detect_excel_format(bio)
-
-    if kind == "xlsx":
-        bio.seek(0)
-        return pd.read_excel(bio, sheet_name=0, engine="openpyxl", header=None)
-
-    if kind == "xls":
+    # si parece HTML, usa read_html con lxml primero
+    if head.startswith(b'<!doctype html') or head.startswith(b'<html') or b'<table' in head[:1024]:
         bio.seek(0)
         try:
-            return pd.read_excel(bio, sheet_name=0, engine="xlrd", header=None)
+            tables = pd.read_html(bio, header=None, flavor="lxml")
         except Exception:
             bio.seek(0)
-            return pd.read_excel(bio, sheet_name=0, header=None)
+            tables = pd.read_html(bio, header=None, flavor="bs4")  # requiere beautifulsoup4 (+ opcional html5lib)
+        if not tables:
+            raise ValueError("No se encontraron tablas en el HTML.")
+        return tables[0]
+
+    # si no es HTML, cae a los motores habituales
+    bio.seek(0)
+    try:
+        return pd.read_excel(bio, sheet_name=0, engine="openpyxl", header=None)  # xlsx
+    except Exception:
+        bio.seek(0)
+        return pd.read_excel(bio, sheet_name=0, engine="xlrd", header=None)      # xls real
 
     if kind == "html":
         bio.seek(0)
