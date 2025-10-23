@@ -3,6 +3,12 @@ import pandas as pd
 import re
 from io import BytesIO
 
+python -m py_compile pages/10_Reporte_de_Cuentas.py
+# o
+python - <<'PY'
+import py_compile; py_compile.compile("pages/10_Reporte_de_Cuentas.py", doraise=True)
+PY
+
 # (Opcional) Solo si tu app principal NO llama set_page_config:
 try:
     st.set_page_config(page_title="Reporte de Cuentas", layout="wide")
