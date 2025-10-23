@@ -8,4 +8,6 @@ xlrd==2.0.1
 XlsxWriter
 Pillow
 fpdf
-pyxlsb 
+pyxlsb
+beautifulsoup4
+lxml
