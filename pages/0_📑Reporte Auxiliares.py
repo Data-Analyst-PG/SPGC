@@ -229,46 +229,110 @@ def _find_cuenta_concepto_col(colnames):
 
 def process_report(df_raw):
     df = df_raw.copy()
+
+    # 1) Quitar banner
     if len(df) > 0:
         df = df.iloc[1:].reset_index(drop=True)
+
+    # 2) Encabezados
     df, _ = _guess_header(df)
-    df.insert(0, "Cuenta", "")
+
+    # 3) Columna Cuenta
+    if "Cuenta" not in df.columns:
+        df.insert(0, "Cuenta", "")
+
+    # --- localizar columnas clave por nombre ---
+    def find_col(pat, default=None):
+        for c in df.columns:
+            if re.search(pat, str(c), re.IGNORECASE):
+                return c
+        return default
+
+    col_cc     = find_col(r"cuenta.*concepto", df.columns[1] if len(df.columns) > 1 else df.columns[0])
+    col_cheque = find_col(r"cheq")
+    col_traf   = find_col(r"traf")
+    col_fact   = find_col(r"fact")
+    col_cargos = find_col(r"cargos")
+    col_abonos = find_col(r"abonos")
+    col_saldo  = find_col(r"saldo")
+
     cuenta_pat = re.compile(r"^\s*\d{3}-\d{2}-\d{2}-\d{3}-\d{2}-\d{3}-\d{4}\s+-\s+.+", re.IGNORECASE)
-    col_cc = _find_cuenta_concepto_col(df.columns)
+
+    # 4) Propagar Cuenta y marcar headers/sumarios puros para eliminar
     last_cuenta = None
     rows_to_drop = []
+
     for idx, val in df[col_cc].astype(str).items():
         text = val.strip()
-        if text == "" or text.lower() == "saldo" or text.lower().startswith("sumas totales"):
-            rows_to_drop.append(idx)
-            continue
+
         if cuenta_pat.match(text):
             last_cuenta = text
-            rows_to_drop.append(idx)
-        else:
-            df.at[idx, "Cuenta"] = last_cuenta if last_cuenta else "__SIN_CUENTA_DETECTADA__"
-    df_clean = df.drop(index=rows_to_drop).reset_index(drop=True)
-    non_aux_cols = [c for c in df_clean.columns if c != "Cuenta"]
+            rows_to_drop.append(idx)        # quitar encabezado
+            continue
+
+        # sumario si dice "Saldo" o "Sumas Totales"
+        is_summary_word = text.lower() in {"saldo", "sumas totales"}
+
+        # ¿tiene referencias de detalle?
+        has_detail_refs = any(
+            c and str(df.at[idx, c]).strip() not in {"", "nan", "None"}
+            for c in [col_cheque, col_traf, col_fact]
+        )
+
+        if is_summary_word and not has_detail_refs:
+            rows_to_drop.append(idx)        # sumario puro -> fuera
+            continue
+
+        # detalle → propagar cuenta
+        df.at[idx, "Cuenta"] = last_cuenta if last_cuenta else "__SIN_CUENTA_DETECTADA__"
+
+    df = df.drop(index=rows_to_drop).reset_index(drop=True)
+
+    # 5) Normalizar montos (para no perder nada por formato)
+    def to_num_safe(x):
+        if pd.isna(x):
+            return pd.NA
+        s = str(x)
+        s = s.replace("\xa0", "").replace(" ", "")
+        s = re.sub(r"[^\d,\.-]", "", s)  # quita $ y otros
+        s = s.replace(",", "")           # quita separador de miles
+        return pd.to_numeric(s, errors="coerce")
+
+    for col in [col_cargos, col_abonos, col_saldo]:
+        if col:
+            df[col] = df[col].apply(to_num_safe)
+
+    # 6) Fecha → date
+    for c in df.columns:
+        if re.search(r"fecha", str(c), re.IGNORECASE):
+            try:
+                df[c] = pd.to_datetime(df[c], errors="coerce").dt.date
+            except Exception:
+                pass
+
+    # 7) QUEDARME SOLO CON DETALLE QUE TENGA MONTOS
+    #    (al menos uno de Cargos, Abonos, Saldo no es NaN)
+    amt_cols = [c for c in [col_cargos, col_abonos, col_saldo] if c]
+    if amt_cols:
+        mask_has_amount = df[amt_cols].notna().any(axis=1)
+        df = df.loc[mask_has_amount].reset_index(drop=True)
+
+        # Si también quieres excluir ceros, descomenta la siguiente línea:
+        # mask_nonzero = (df[amt_cols].fillna(0).abs().sum(axis=1) > 0)
+        # df = df.loc[mask_nonzero].reset_index(drop=True)
+
+    # 8) Filas totalmente vacías (ignorando Cuenta) → fuera
+    non_cuenta_cols = [c for c in df.columns if c != "Cuenta"]
     def _row_is_empty(series):
         for v in series.values:
-            s = str(v).strip().lower()
-            if s != "" and s != "nan":
+            s = str(v).replace("\xa0", " ").strip().lower()
+            if s not in {"", "nan", "none"}:
                 return False
         return True
-    df_clean["__empty__"] = df_clean[non_aux_cols].astype(str).apply(_row_is_empty, axis=1)
-    df_clean = df_clean.loc[~df_clean["__empty__"]].drop(columns="__empty__").reset_index(drop=True)
-    for col in df_clean.columns:
-        if re.search(r"fecha", str(col), re.IGNORECASE):
-            try:
-                df_clean[col] = pd.to_datetime(df_clean[col], errors="coerce").dt.date
-            except Exception:
-                pass
-        if re.search(r"(cargos|abonos|saldo)", str(col), re.IGNORECASE):
-            try:
-                df_clean[col] = pd.to_numeric(df_clean[col], errors="coerce")
-            except Exception:
-                pass
-    return df_clean
+    df["__empty__"] = df[non_cuenta_cols].astype(str).apply(_row_is_empty, axis=1)
+    df = df.loc[~df["__empty__"]].drop(columns="__empty__").reset_index(drop=True)
+
+    return df
 
 uploaded = st.file_uploader(
     "Sube el archivo (.xls, .xlsx o .html)",
