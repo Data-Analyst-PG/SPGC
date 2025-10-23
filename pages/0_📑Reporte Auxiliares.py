@@ -232,8 +232,6 @@ def process_report(df_raw):
     if len(df) > 0:
         df = df.iloc[1:].reset_index(drop=True)
     df, _ = _guess_header(df)
-    df.insert(1, "Aux1", "")
-    df.insert(2, "Aux2", "")
     df.insert(0, "Cuenta", "")
     cuenta_pat = re.compile(r"^\s*\d{3}-\d{2}-\d{2}-\d{3}-\d{2}-\d{3}-\d{4}\s+-\s+.+", re.IGNORECASE)
     col_cc = _find_cuenta_concepto_col(df.columns)
@@ -250,7 +248,7 @@ def process_report(df_raw):
         else:
             df.at[idx, "Cuenta"] = last_cuenta if last_cuenta else "__SIN_CUENTA_DETECTADA__"
     df_clean = df.drop(index=rows_to_drop).reset_index(drop=True)
-    non_aux_cols = [c for c in df_clean.columns if c not in ["Cuenta", "Aux1", "Aux2"]]
+    non_aux_cols = [c for c in df_clean.columns if c != "Cuenta"]
     def _row_is_empty(series):
         for v in series.values:
             s = str(v).strip().lower()
