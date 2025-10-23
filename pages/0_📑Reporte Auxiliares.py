@@ -310,16 +310,16 @@ def process_report(df_raw):
             except Exception:
                 pass
 
-    # 7) QUEDARME SOLO CON DETALLE QUE TENGA MONTOS
-    #    (al menos uno de Cargos, Abonos, Saldo no es NaN)
+    # 7) QUEDARME SOLO CON DETALLE QUE TENGA MONTOS REALES (>0 o <0)
     amt_cols = [c for c in [col_cargos, col_abonos, col_saldo] if c]
     if amt_cols:
-        mask_has_amount = df[amt_cols].notna().any(axis=1)
-        df = df.loc[mask_has_amount].reset_index(drop=True)
+        # Asegura que sean numéricos
+        for c in amt_cols:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
 
-        # Si también quieres excluir ceros, descomenta la siguiente línea:
-        # mask_nonzero = (df[amt_cols].fillna(0).abs().sum(axis=1) > 0)
-        # df = df.loc[mask_nonzero].reset_index(drop=True)
+        # Mantener solo filas con al menos un monto distinto de cero
+        mask_nonzero = (df[amt_cols].fillna(0).abs().sum(axis=1) > 0)
+        df = df.loc[mask_nonzero].reset_index(drop=True)
 
     # 8) Filas totalmente vacías (ignorando Cuenta) → fuera
     non_cuenta_cols = [c for c in df.columns if c != "Cuenta"]
