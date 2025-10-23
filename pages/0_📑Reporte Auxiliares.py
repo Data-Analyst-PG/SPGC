@@ -317,9 +317,9 @@ def process_report(df_raw):
         for c in amt_cols:
             df[c] = pd.to_numeric(df[c], errors="coerce")
 
-        # 7.1) Eliminar filas que son "Sumas Totales" explícitas
+        # 7.1) Eliminar filas con Cuenta/Concepto vacío (solo montos, sin detalle)
         if col_cc in df.columns:
-            df = df[~df[col_cc].astype(str).str.contains(r"sumas\s*totales", case=False, na=False)]
+            df = df[df[col_cc].astype(str).str.strip().ne("")]
 
         # Mantener solo filas con al menos un monto distinto de cero
         mask_nonzero = (df[amt_cols].fillna(0).abs().sum(axis=1) > 0)
