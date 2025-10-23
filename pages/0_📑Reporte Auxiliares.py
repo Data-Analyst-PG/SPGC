@@ -1,8 +1,8 @@
-# pages/10_Reporte_de_Cuentas.py
 import streamlit as st
 import pandas as pd
 import re
 from io import BytesIO
+import io
 
 try:
     st.set_page_config(page_title="Reporte de Cuentas", layout="wide")
@@ -16,10 +16,18 @@ st.caption(
 )
 
 def _read_excel_any(uploaded_file):
-    try:
-        return pd.read_excel(uploaded_file, sheet_name=0, engine="xlrd", header=None)
-    except Exception:
-        return pd.read_excel(uploaded_file, sheet_name=0, header=None)
+    name = getattr(uploaded_file, "name", "")
+    if name.lower().endswith(".xls"):
+        # intentar con xlrd
+        try:
+            return pd.read_excel(uploaded_file, sheet_name=0, engine="xlrd", header=None)
+        except Exception:
+            # fallback con openpyxl
+            uploaded_file.seek(0)
+            return pd.read_excel(uploaded_file, sheet_name=0, engine="openpyxl", header=None)
+    else:
+        # para .xlsx u otros modernos
+        return pd.read_excel(uploaded_file, sheet_name=0, engine="openpyxl", header=None)
 
 def _guess_header(df):
     header_idx = None
