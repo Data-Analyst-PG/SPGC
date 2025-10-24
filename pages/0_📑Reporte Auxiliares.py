@@ -23,25 +23,25 @@ def _to_num_safe(x):
 def _drop_summary_rows(df: pd.DataFrame, cols: list[str] | None = None) -> pd.DataFrame:
     """
     Elimina renglones de sumatorias/globales donde cualquier columna de `cols`
-    tenga valores como 'Sumas Totales', 'Suma Total', 'Total', 'Totales', 'Saldo', 'Saldos'.
-    También limpia NBSP y espacios.
+    tenga valores como 'Sumas Totales', 'Suma Total', 'Total', 'Totales',
+    'Saldo', 'Saldos', 'Saldo inicial'.
     """
     if cols is None:
         cols = list(df.columns)
 
     summary_re = re.compile(
-        r"^\s*(sumas?\s+totales?|suma\s+total|totales?|saldo|saldos?)\s*$",
-        re.IGNORECASE
+        r"^\s*(sumas?\s+totales?|suma\s+total|totales?|total|saldo|saldos?|saldo\s+inicial:?)\s*$",
+        re.IGNORECASE,
     )
 
     mask = pd.Series(False, index=df.index)
     for c in cols:
         if c in df.columns:
-            mask = mask | (
+            mask |= (
                 df[c].astype(str)
-                     .str.replace("\xa0", " ", regex=False)
-                     .str.strip()
-                     .str.match(summary_re)
+                    .str.replace("\xa0", " ", regex=False)
+                    .str.strip()
+                    .str.match(summary_re)
             )
     return df.loc[~mask].reset_index(drop=True)
 
@@ -263,65 +263,52 @@ def _guess_header(df):
 # =====================================================
 
 def process_star2_single(df_raw: pd.DataFrame) -> pd.DataFrame:
-    """
-    STAR 2.0:
-    - Detectar encabezados.
-    - Tomar 'Cuenta' desde A2 (primera fila de datos, primera columna) removiendo ': ' / NBSP / 'Cuenta:' etc.
-    - Eliminar esa fila y propagar 'Cuenta' como primera columna.
-    - OMITIR filas de SUMAS TOTALES / SALDO(S).
-    - Limpiar montos; ordenar columnas exactamente.
-    """
     df, _ = _guess_header(df_raw.copy())
 
     def _norm_name(c: str) -> str:
         s = str(c).strip().replace("\xa0", " ")
-        s_l = s.lower()
-        if s_l == "poliza":   return "Poliza"
-        if s_l == "concepto": return "Concepto"
-        if s_l == "cheque":   return "Cheque"
+        s_l = re.sub(r"\s+", " ", s.lower())
+        if s_l == "poliza":    return "Poliza"
+        if s_l == "concepto":  return "Concepto"
+        # Cliente / Proveedor y Sucursal (si las usas)
+        if "cliente" in s_l and "proveedor" in s_l: return "Cliente / Proveedor"
+        if "sucursal" in s_l or s_l in ("suc", "suc."): return "Sucursal"
+        if s_l == "cheque":    return "Cheque"
         if s_l in ("trafico", "tráfico"): return "Trafico"
-        if s_l == "factura":  return "Factura"
-        if s_l == "fecha":    return "Fecha"
-        if s_l == "cargos":   return "Cargos"
-        if s_l == "abonos":   return "Abonos"
-        if s_l == "saldo":    return "Saldo"
+        if s_l == "factura":   return "Factura"
+        if s_l == "fecha":     return "Fecha"
+        if s_l == "cargos":    return "Cargos"
+        if s_l == "abonos":    return "Abonos"
+        if s_l == "saldo":     return "Saldo"
         return s
+
     df = df.rename(columns={c: _norm_name(c) for c in df.columns})
 
-    # Cuenta en A2 (primera fila de datos, primera columna)
+    # Cuenta desde A2 (fila 0 antes de quitarla) — cubre "Cuenta:" y ":".
     cuenta_text = ""
     if len(df) > 0 and df.shape[1] > 0:
-        a2 = str(df.iloc[0, 0])
-        a2 = a2.replace("\xa0", " ").strip()
+        a2 = str(df.iloc[0, 0]).replace("\xa0", " ").strip()
         a2 = re.sub(r"^(cuenta\s*:|:)\s*", "", a2, flags=re.IGNORECASE).strip()
         cuenta_text = a2
 
-    # Remover esa fila y reset
+    # Remover A2 y reset
     df_det = df.iloc[1:].reset_index(drop=True)
-    # 🔴 Eliminar filas de sumatorias/globales en cualquier columna (incluida 'Fecha')
-    df_det = _drop_summary_rows(df_det)  # <-- NUEVO
 
-    # 🔴 Omitir filas de “SUMAS TOTALES / SALDO(S)”
-    summary_re = re.compile(r"^\s*(sumas?\s+totales?|suma\s+total|saldo|saldos?)\s*$", re.IGNORECASE)
-    mask_summary = pd.Series(False, index=df_det.index)
-    for col in ["Concepto", "Poliza"]:
-        if col in df_det.columns:
-            mask_summary |= (
-                df_det[col]
-                .astype(str)
-                .str.replace("\xa0", " ", regex=False)
-                .str.strip()
-                .str.match(summary_re)
-            )
-    df_det = df_det.loc[~mask_summary].reset_index(drop=True)
+    # 🔴 NUEVO: si la primera fila trae "Saldo inicial" en la columna Saldo, eliminarla
+    if "Saldo" in df_det.columns and not df_det.empty:
+        if re.search(r"^saldo\s+inicial:?$", str(df_det.at[0, "Saldo"]).strip(), re.IGNORECASE):
+            df_det = df_det.iloc[1:].reset_index(drop=True)
 
-    # Insertar Cuenta primera
+    # 🔴 Eliminar filas-resumen en CUALQUIER columna (incluye "Total" y "Saldo inicial")
+    df_det = _drop_summary_rows(df_det)
+
+    # Insertar Cuenta al inicio
     if "Cuenta" not in df_det.columns:
         df_det.insert(0, "Cuenta", cuenta_text)
     else:
         df_det["Cuenta"] = cuenta_text
 
-    # Filtrar conceptos vacíos si existiera la columna
+    # Filtrar conceptos vacíos
     if "Concepto" in df_det.columns:
         df_det = df_det[df_det["Concepto"].astype(str).str.strip().ne("")]
 
@@ -330,14 +317,14 @@ def process_star2_single(df_raw: pd.DataFrame) -> pd.DataFrame:
         if col in df_det.columns:
             df_det[col] = df_det[col].apply(_to_num_safe)
 
-    # Mantener filas con algún monto distinto de cero
+    # Mantener filas con algún monto (si existen columnas de monto)
     amt_cols = [c for c in ["Cargos", "Abonos", "Saldo"] if c in df_det.columns]
     if amt_cols:
-        mask_nonzero = (df_det[amt_cols].fillna(0).abs().sum(axis=1) > 0)
-        df_det = df_det.loc[mask_nonzero].reset_index(drop=True)
+        df_det = df_det[df_det[amt_cols].fillna(0).abs().sum(axis=1) > 0].reset_index(drop=True)
 
-    # Orden exacto
-    desired = ["Cuenta", "Poliza", "Concepto", "Cheque", "Trafico", "Factura", "Fecha", "Cargos", "Abonos", "Saldo"]
+    # Orden final (ajusta si usas Cliente/Proveedor y Sucursal)
+    desired = ["Cuenta", "Poliza", "Concepto", "Cliente / Proveedor", "Sucursal",
+               "Cheque", "Trafico", "Factura", "Fecha", "Cargos", "Abonos", "Saldo"]
     ordered = [c for c in desired if c in df_det.columns]
     rest = [c for c in df_det.columns if c not in ordered]
     return df_det[ordered + rest]
@@ -345,7 +332,7 @@ def process_star2_single(df_raw: pd.DataFrame) -> pd.DataFrame:
 def process_star2_many(raws):
     frames = [process_star2_single(df_raw) for df_raw in raws]
     if not frames:
-        return pd.DataFrame(columns=["Cuenta", "Poliza", "Concepto", "Cheque", "Trafico", "Factura", "Fecha", "Cargos", "Abonos", "Saldo"])
+        return pd.DataFrame(columns=["Cuenta", "Poliza", "Concepto", "Cliente / Proveedor", "Sucursal", "Cheque", "Trafico", "Factura", "Fecha", "Cargos", "Abonos", "Saldo"])
     return pd.concat(frames, ignore_index=True)
 
 
