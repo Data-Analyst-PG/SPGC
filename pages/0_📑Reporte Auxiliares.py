@@ -146,8 +146,12 @@ def _guess_header(df):
 
 def process_star2_single(df_raw: pd.DataFrame) -> pd.DataFrame:
     """
-    - Extrae Cuenta desde A2 (quitando ':', 'Cuenta:', NBSP).
-    - Elimina esa fila, agrega 'Cuenta' al inicio y ordena columnas.
+    STAR 2.0:
+    - Detectar encabezados.
+    - Tomar 'Cuenta' desde A2 (primera fila de datos, primera columna) removiendo ': ' / NBSP / 'Cuenta:' etc.
+    - Eliminar esa fila y propagar 'Cuenta' como primera columna.
+    - OMITIR filas de SUMAS TOTALES / SALDO(S).
+    - Limpiar montos; ordenar columnas exactamente.
     """
     df, _ = _guess_header(df_raw.copy())
 
@@ -164,38 +168,59 @@ def process_star2_single(df_raw: pd.DataFrame) -> pd.DataFrame:
         if s_l == "abonos":   return "Abonos"
         if s_l == "saldo":    return "Saldo"
         return s
-
     df = df.rename(columns={c: _norm_name(c) for c in df.columns})
 
-    # Cuenta en A2
+    # Cuenta en A2 (primera fila de datos, primera columna)
     cuenta_text = ""
     if len(df) > 0 and df.shape[1] > 0:
-        a2 = str(df.iloc[0, 0]).replace("\xa0", " ").strip()
+        a2 = str(df.iloc[0, 0])
+        a2 = a2.replace("\xa0", " ").strip()
         a2 = re.sub(r"^(cuenta\s*:|:)\s*", "", a2, flags=re.IGNORECASE).strip()
         cuenta_text = a2
 
+    # Remover esa fila y reset
     df_det = df.iloc[1:].reset_index(drop=True)
+
+    # 🔴 Omitir filas de “SUMAS TOTALES / SALDO(S)”
+    summary_re = re.compile(r"^\s*(sumas?\s+totales?|suma\s+total|saldo|saldos?)\s*$", re.IGNORECASE)
+    mask_summary = pd.Series(False, index=df_det.index)
+    for col in ["Concepto", "Poliza"]:
+        if col in df_det.columns:
+            mask_summary |= (
+                df_det[col]
+                .astype(str)
+                .str.replace("\xa0", " ", regex=False)
+                .str.strip()
+                .str.match(summary_re)
+            )
+    df_det = df_det.loc[~mask_summary].reset_index(drop=True)
+
+    # Insertar Cuenta primera
     if "Cuenta" not in df_det.columns:
         df_det.insert(0, "Cuenta", cuenta_text)
     else:
         df_det["Cuenta"] = cuenta_text
 
+    # Filtrar conceptos vacíos si existiera la columna
     if "Concepto" in df_det.columns:
         df_det = df_det[df_det["Concepto"].astype(str).str.strip().ne("")]
 
+    # Montos a numérico
     for col in ["Cargos", "Abonos", "Saldo"]:
         if col in df_det.columns:
             df_det[col] = df_det[col].apply(_to_num_safe)
 
+    # Mantener filas con algún monto distinto de cero
     amt_cols = [c for c in ["Cargos", "Abonos", "Saldo"] if c in df_det.columns]
     if amt_cols:
-        df_det = df_det[df_det[amt_cols].fillna(0).abs().sum(axis=1) > 0]
+        mask_nonzero = (df_det[amt_cols].fillna(0).abs().sum(axis=1) > 0)
+        df_det = df_det.loc[mask_nonzero].reset_index(drop=True)
 
+    # Orden exacto
     desired = ["Cuenta", "Poliza", "Concepto", "Cheque", "Trafico", "Factura", "Fecha", "Cargos", "Abonos", "Saldo"]
     ordered = [c for c in desired if c in df_det.columns]
     rest = [c for c in df_det.columns if c not in ordered]
     return df_det[ordered + rest]
-
 
 def process_star2_many(raws):
     frames = [process_star2_single(df_raw) for df_raw in raws]
