@@ -18,6 +18,30 @@ def _to_num_safe(x):
     except Exception:
         return 0.0
 
+def _drop_summary_rows(df: pd.DataFrame, cols: list[str] | None = None) -> pd.DataFrame:
+    """
+    Elimina renglones de sumatorias/globales donde cualquier columna de `cols`
+    tenga valores como 'Sumas Totales', 'Suma Total', 'Total', 'Totales', 'Saldo', 'Saldos'.
+    También limpia NBSP y espacios.
+    """
+    if cols is None:
+        cols = list(df.columns)
+
+    summary_re = re.compile(
+        r"^\s*(sumas?\s+totales?|suma\s+total|totales?|saldo|saldos?)\s*$",
+        re.IGNORECASE
+    )
+
+    mask = pd.Series(False, index=df.index)
+    for c in cols:
+        if c in df.columns:
+            mask = mask | (
+                df[c].astype(str)
+                     .str.replace("\xa0", " ", regex=False)
+                     .str.strip()
+                     .str.match(summary_re)
+            )
+    return df.loc[~mask].reset_index(drop=True)
 
 def _read_excel_any(uploaded):
     """
