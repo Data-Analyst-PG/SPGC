@@ -302,11 +302,12 @@ def process_report(df_raw):
         if col:
             df[col] = df[col].apply(to_num_safe)
 
-    # 6) Fecha → date
+    # 6) Fecha → formato dd/mm/yyyy
     for c in df.columns:
         if re.search(r"fecha", str(c), re.IGNORECASE):
             try:
-                df[c] = pd.to_datetime(df[c], errors="coerce").dt.date
+                # Convertir a datetime y luego formatear al texto dd/mm/yyyy
+                df[c] = pd.to_datetime(df[c], errors="coerce").dt.strftime("%d/%m/%Y")
             except Exception:
                 pass
 
