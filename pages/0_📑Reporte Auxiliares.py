@@ -6,6 +6,113 @@ import re
 from io import BytesIO
 import io
 
+import re
+import pandas as pd
+from io import BytesIO
+
+# --- Detector simple del modo por DataFrame ---
+def _detect_mode(df: pd.DataFrame) -> str:
+    # Si existe columna "Poliza" asumimos STAR 2.0
+    if any(str(c).strip().lower() == "poliza" for c in df.columns):
+        return "star2"
+    # Si vemos encabezados con "Cuenta / Concepto" y no hay "Poliza", asumimos STAR 1
+    if any(re.search(r"cuenta.*concepto", str(c), re.IGNORECASE) for c in df.columns):
+        return "star1"
+    # fallback
+    return "star1"
+
+# --- Limpieza de montos a numérico seguro ---
+def _to_num_safe(x):
+    if pd.isna(x): 
+        return pd.NA
+    s = str(x)
+    s = s.replace("\xa0", "").replace(" ", "")
+    s = re.sub(r"[^\d,\.-]", "", s)  # quita $, etc.
+    s = s.replace(",", "")           # separador miles
+    return pd.to_numeric(s, errors="coerce")
+
+# --- Fecha a texto dd/mm/yyyy ---
+def _to_ddmmyyyy(series):
+    try:
+        return pd.to_datetime(series, errors="coerce").dt.strftime("%d/%m/%Y")
+    except Exception:
+        return series
+
+# --- STAR 2.0: procesa 1 archivo por cuenta y devuelve DF detalle con columna Cuenta agregada ---
+def process_star2_single(df_raw: pd.DataFrame) -> pd.DataFrame:
+    df = df_raw.copy()
+
+    # La cuenta está en B2 (fila 1, col 1 cero-index)
+    cuenta_text = ""
+    try:
+        cuenta_text = str(df.iloc[1, 1])
+    except Exception:
+        pass
+    # quitar prefijo ": " si viene
+    cuenta_text = re.sub(r"^\s*:\s*", "", cuenta_text or "")
+
+    # Insertar columna Cuenta al inicio
+    if "Cuenta" not in df.columns:
+        df.insert(0, "Cuenta", "")
+
+    # Quitar 2 primeras filas (encabezado y donde venía la cuenta)
+    df_det = df.iloc[2:].reset_index(drop=True)
+
+    # Renombrado robusto de columnas
+    rename_map = {}
+    for c in df_det.columns:
+        lc = str(c).strip().lower()
+        if lc == "poliza":   rename_map[c] = "Poliza"
+        if lc == "concepto": rename_map[c] = "Cuenta / Concepto"
+        if lc == "cheque":   rename_map[c] = "Cheque"
+        if lc == "trafico":  rename_map[c] = "Trafico"
+        if lc == "factura":  rename_map[c] = "Factura"
+        if lc == "fecha":    rename_map[c] = "Fecha"
+        if lc == "cargos":   rename_map[c] = "Cargos"
+        if lc == "abonos":   rename_map[c] = "Abonos"
+        if lc == "saldo":    rename_map[c] = "Saldo"
+    if rename_map:
+        df_det = df_det.rename(columns=rename_map)
+
+    # Propagar cuenta
+    df_det["Cuenta"] = cuenta_text
+
+    # Normalizar montos
+    for col in ["Cargos", "Abonos", "Saldo"]:
+        if col in df_det.columns:
+            df_det[col] = df_det[col].apply(_to_num_safe)
+
+    # Fecha al formato texto dd/mm/yyyy
+    if "Fecha" in df_det.columns:
+        df_det["Fecha"] = _to_ddmmyyyy(df_det["Fecha"])
+
+    # Eliminar filas con concepto vacío (solo montos)
+    if "Cuenta / Concepto" in df_det.columns:
+        df_det = df_det[df_det["Cuenta / Concepto"].astype(str).str.strip().ne("")]
+
+    # Mantener solo filas con algún monto distinto de cero
+    amt_cols = [c for c in ["Cargos", "Abonos", "Saldo"] if c in df_det.columns]
+    if amt_cols:
+        mask_nonzero = (df_det[amt_cols].fillna(0).abs().sum(axis=1) > 0)
+        df_det = df_det.loc[mask_nonzero].reset_index(drop=True)
+
+    return df_det
+
+# --- STAR 2.0: consolida varios archivos ---
+def process_star2_many(dfs_raw: list[pd.DataFrame]) -> pd.DataFrame:
+    partes = []
+    for df_raw in dfs_raw:
+        partes.append(process_star2_single(df_raw))
+    if not partes:
+        return pd.DataFrame()
+    out = pd.concat(partes, ignore_index=True)
+
+    # Orden de columnas sugerido
+    ordered = [c for c in ["Cuenta", "Poliza", "Cuenta / Concepto", "Cheque", "Trafico", "Factura", "Fecha", "Cargos", "Abonos", "Saldo"] if c in out.columns]
+    rest = [c for c in out.columns if c not in ordered]
+    out = out[ordered + rest]
+    return out
+
 try:
     st.set_page_config(page_title="Reporte de Cuentas", layout="wide")
 except Exception:
@@ -339,30 +446,59 @@ def process_report(df_raw):
 
     return df
 
-uploaded = st.file_uploader(
-    "Sube el archivo (.xls, .xlsx o .html)",
-    type=["xls", "xlsx", "html", "htm"],
-    accept_multiple_files=False
+st.subheader("Tipo de archivo")
+mode = st.selectbox(
+    "Selecciona el modo de procesamiento",
+    ["Auto", "STAR 1 (todas las cuentas en un archivo)", "STAR 2.0 (por cuenta, múltiples archivos)"],
+    index=0
 )
 
-if uploaded is None:
-    st.info("Esperando archivo…")
+uploaded_files = st.file_uploader(
+    "Sube uno o varios archivos (.xls, .xlsx, .html, .htm)",
+    type=["xls", "xlsx", "html", "htm"],
+    accept_multiple_files=True
+)
+
+if not uploaded_files:
+    st.info("Sube tus archivos para procesar.\n\n• **STAR 1**: un solo archivo con todas las cuentas.\n• **STAR 2.0**: varios archivos (uno por cuenta) y los consolidamos.")
 else:
     try:
-        df0 = _read_excel_any(uploaded)
-        df_clean = process_report(df0)
-        st.success("Listo. Filas finales: {:,}".format(len(df_clean)))
-        st.dataframe(df_clean.head(500), use_container_width=True)
-        buffer = BytesIO()
-        with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        # 1) leer todos a DataFrames crudos
+        raws = []
+        for up in uploaded_files:
+            raws.append(_read_excel_any(up))
+
+        # 2) determinar modo efectivo
+        if mode.startswith("Auto"):
+            eff_mode = _detect_mode(raws[0])
+        elif mode.startswith("STAR 1"):
+            eff_mode = "star1"
+        else:
+            eff_mode = "star2"
+
+        # 3) procesar
+        if eff_mode == "star1":
+            if len(raws) > 1:
+                st.warning("Modo **STAR 1**: se tomará solo el **primer archivo** y se ignorarán los demás.")
+            df_clean = process_report(raws[0])  # tu función existente STAR 1
+        else:
+            df_clean = process_star2_many(raws)
+
+        st.success(f"✅ Listo. Filas finales: {len(df_clean):,}")
+        st.dataframe(df_clean.head(1000), use_container_width=True)
+
+        # 4) descarga
+        buf = BytesIO()
+        with pd.ExcelWriter(buf, engine="openpyxl") as writer:
             df_clean.to_excel(writer, index=False, sheet_name="REPORTE")
         st.download_button(
-            "Descargar Excel procesado",
-            data=buffer.getvalue(),
+            "⬇️ Descargar Excel procesado",
+            data=buf.getvalue(),
             file_name="Reporte_procesado.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True,
         )
+
     except Exception as e:
-        st.error("Ocurrió un error procesando el archivo: {}".format(e))
+        st.error(f"Ocurrió un error procesando: {e}")
         st.exception(e)
