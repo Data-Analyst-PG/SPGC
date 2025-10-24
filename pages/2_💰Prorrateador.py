@@ -32,7 +32,7 @@ if uploaded_file:
         # Filtrar "GASTO GENERAL"
         gasto_general = df[df["SUCURSAL"] == "GASTO GENERAL"]
 
-        # Agrupar por AREA/GASTO y sumar los CARGOS
+        # Agrupar por AREA/CUENTA y sumar los CARGOS
         resumen = (
             gasto_general
             .groupby("AREA/CUENTA", as_index=False)["CARGOS"]
@@ -94,7 +94,7 @@ edit_df = st.data_editor(
 )
 
 # Botón para guardar en Supabase
-if st.button("💾 Guardar en Supabase"):
+if st.button("💾 Guardar en Supabase", key="save_traficos"):
     try:
         df_to_save = edit_df.copy()
 
@@ -128,7 +128,7 @@ if st.button("💾 Guardar en Supabase"):
 st.divider()
 
 # ======================================================================================================
-st.title("📘Catálogo de Distribución por AREA/GASTO")
+st.title("📘Catálogo de Distribución por AREA/CUENTA")
 
 tipos_distribucion = [
     "Facturación Dlls", "MC", "Tráficos",
@@ -171,7 +171,7 @@ if 'resumen' in st.session_state:
     )
 
     # Botón para guardar nuevos registros y actualizaciones en Supabase
-    if st.button("💾 Guardar en Supabase"):
+    if st.button("💾 Guardar en Supabase", key="save_catalogo"):
         nuevos = edited_df[edited_df["TIPO DISTRIBUCIÓN"].notna()]
         for _, row in nuevos.iterrows():
             supabase.table("catalogo_distribucion").upsert({
@@ -244,11 +244,6 @@ df_original.columns = df_original.columns.str.strip().str.upper()
 porcentajes.columns = [str(c).upper() for c in porcentajes.columns]
 if "CONCEPTO" not in df_original.columns:
     df_original["CONCEPTO"] = ""
-
-# --- CONFIGURACIÓN SUPABASE ---
-url = st.secrets["SUPABASE_URL"]
-key = st.secrets["SUPABASE_KEY"]
-supabase = create_client(url, key)
 
 # Catálogo (AREA/CUENTA -> TIPO DISTRIBUCIÓN)
 cat_resp = supabase.table("catalogo_distribucion").select("*").execute()
