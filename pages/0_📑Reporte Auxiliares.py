@@ -470,13 +470,13 @@ def process_report(df_raw):
 # =====================================================
 # --- INTERFAZ STREAMLIT ---
 # =====================================================
-
 st.title("Reporte de Cuentas → Limpieza automática")
 st.caption(
     "Sube el Excel (.xls o .xlsx) tal como lo descargas. "
     "La página eliminará encabezados/sumarios, propagará la cuenta y te dará un archivo limpio."
+)
 
-    
+
 mode = st.selectbox(
     "Selecciona el modo de procesamiento",
     ["Auto", "STAR 1 (todas las cuentas en un archivo)", "STAR 2.0 (por cuenta, múltiples archivos)"],
