@@ -204,6 +204,8 @@ def process_star2_single(df_raw: pd.DataFrame) -> pd.DataFrame:
 
     # Remover esa fila y reset
     df_det = df.iloc[1:].reset_index(drop=True)
+    # 🔴 Eliminar filas de sumatorias/globales en cualquier columna (incluida 'Fecha')
+    df_det = _drop_summary_rows(df_det)  # <-- NUEVO
 
     # 🔴 Omitir filas de “SUMAS TOTALES / SALDO(S)”
     summary_re = re.compile(r"^\s*(sumas?\s+totales?|suma\s+total|saldo|saldos?)\s*$", re.IGNORECASE)
@@ -336,6 +338,8 @@ def process_report(df_raw):
         df.at[idx, "Cuenta"] = last_cuenta if last_cuenta else "__SIN_CUENTA_DETECTADA__"
 
     df = df.drop(index=rows_to_drop).reset_index(drop=True)
+    # 🔴 EXTRA: eliminar 'Sumas Totales / Suma Total / Saldo(s)' si aparecen en otras columnas (p.ej. 'Fecha')
+    df = _drop_summary_rows(df)  # <-- NUEVO
 
     for col in [col_cargos, col_abonos, col_saldo]:
         if col:
