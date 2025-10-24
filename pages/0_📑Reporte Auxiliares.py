@@ -45,52 +45,60 @@ def _drop_summary_rows(df: pd.DataFrame, cols: list[str] | None = None) -> pd.Da
 
 def _read_excel_any(uploaded):
     """
-    Lee .xls, .xlsx, .html, .htm desde un UploadedFile de Streamlit.
-    Usa engines modernos y mensajes claros si falta soporte para .xls.
-    Devuelve DataFrame con dtype=str y sin encabezado (header=None).
+    Lee archivos .xls, .xlsx, .html, .htm provenientes de STAR 1 o STAR 2.0.
+    Detecta si un .xls realmente contiene HTML (caso común en STAR 1) y lo trata correctamente.
+    Devuelve un DataFrame con dtype=str y sin encabezado (header=None).
     """
-    # Conserva el buffer del archivo de Streamlit
+    # Lee todo el contenido del archivo de Streamlit
     data = uploaded.read()
     bio = BytesIO(data)
-
     name = (uploaded.name or "").lower()
 
-    # HTML/HTM
-    if name.endswith((".html", ".htm")):
+    # --- Detectar si el archivo contiene HTML aunque tenga extensión .xls ---
+    # Muchos archivos STAR 1 vienen renombrados como .xls pero en realidad son HTML
+    head = data[:1000].lower()
+    looks_like_html = b"<html" in head or b"<table" in head or b"<!doctype" in head
+
+    # --- Caso 1: HTML / HTM o .xls disfrazado de HTML ---
+    if name.endswith((".html", ".htm")) or looks_like_html:
         bio.seek(0)
         tables = pd.read_html(bio, header=None, dtype=str)
         return tables[0]
 
-    # XLSX (openpyxl)
+    # --- Caso 2: XLSX (motor openpyxl) ---
     if name.endswith(".xlsx"):
         bio.seek(0)
         return pd.read_excel(bio, header=None, dtype=str, engine="openpyxl")
 
-    # XLS (xlrd)
+    # --- Caso 3: XLS binario real (motor xlrd) ---
     if name.endswith(".xls"):
         try:
             bio.seek(0)
             return pd.read_excel(bio, header=None, dtype=str, engine="xlrd")
         except Exception as e:
             raise ValueError(
-                "No pude leer .xls. Instala xlrd (soporta .xls) o convierte a .xlsx. "
+                "No pude leer el archivo .xls con formato binario. "
+                "Parece un .xls exportado como HTML (STAR 1). "
+                "Vuelve a exportarlo como Excel real o usa .xlsx.\n"
                 f"Detalle: {e}"
             )
 
-    # Intento por contenido si la extensión viene rara
-    # 1) probar openpyxl
+    # --- Caso 4: Intentos finales según contenido ---
+    # 4.1 intentar openpyxl
     try:
         bio.seek(0)
         return pd.read_excel(bio, header=None, dtype=str, engine="openpyxl")
     except Exception:
         pass
-    # 2) probar xlrd
+
+    # 4.2 intentar xlrd
     try:
         bio.seek(0)
         return pd.read_excel(bio, header=None, dtype=str, engine="xlrd")
     except Exception:
         pass
-    # 3) probar como HTML
+
+    # 4.3 intentar como HTML genérico
     try:
         bio.seek(0)
         tables = pd.read_html(bio, header=None, dtype=str)
@@ -98,8 +106,10 @@ def _read_excel_any(uploaded):
     except Exception:
         pass
 
-    raise ValueError("Formato no soportado. Usa .xlsx (recomendado), .xls (con xlrd), o .html/.htm.")
-
+    # Si nada funcionó
+    raise ValueError(
+        "Formato no soportado. Usa .xlsx (recomendado), o .xls/.html/.htm válidos."
+    )
 
 # =====================================================
 # --- DETECCIÓN DEL MODO ---
