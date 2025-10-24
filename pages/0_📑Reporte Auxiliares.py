@@ -6,10 +6,6 @@ import re
 from io import BytesIO
 import io
 
-import re
-import pandas as pd
-from io import BytesIO
-
 # --- Detector simple del modo por DataFrame ---
 def _detect_mode(df: pd.DataFrame) -> str:
     # Si existe columna "Poliza" asumimos STAR 2.0
