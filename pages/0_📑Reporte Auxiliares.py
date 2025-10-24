@@ -3,6 +3,8 @@ import pandas as pd
 import re
 from io import BytesIO
 import io
+from bs4 import BeautifulSoup
+from lxml import etree
 
 # =====================================================
 # --- UTILIDADES BÁSICAS ---
@@ -43,73 +45,155 @@ def _drop_summary_rows(df: pd.DataFrame, cols: list[str] | None = None) -> pd.Da
             )
     return df.loc[~mask].reset_index(drop=True)
 
-def _read_excel_any(uploaded):
+def _read_excel_any(uploaded_file):
     """
-    Lee archivos .xls, .xlsx, .html, .htm provenientes de STAR 1 o STAR 2.0.
-    Detecta si un .xls realmente contiene HTML (caso común en STAR 1) y lo trata correctamente.
-    Devuelve un DataFrame con dtype=str y sin encabezado (header=None).
+    Carga .xlsx/.xls reales, HTML "tipo Excel" (aunque venga como .xls),
+    y Excel 2003 XML (SpreadsheetML), incluso si viene incrustado en HTML.
+    Devuelve un DataFrame SIN encabezados (header=None) y en texto.
     """
-    # Lee todo el contenido del archivo de Streamlit
-    data = uploaded.read()
-    bio = BytesIO(data)
-    name = (uploaded.name or "").lower()
 
-    # --- Detectar si el archivo contiene HTML aunque tenga extensión .xls ---
-    # Muchos archivos STAR 1 vienen renombrados como .xls pero en realidad son HTML
-    head = data[:1000].lower()
-    looks_like_html = b"<html" in head or b"<table" in head or b"<!doctype" in head
+    # Normaliza a bytes
+    raw = uploaded_file.read() if hasattr(uploaded_file, "read") else uploaded_file
+    bio = io.BytesIO(raw)
 
-    # --- Caso 1: HTML / HTM o .xls disfrazado de HTML ---
-    if name.endswith((".html", ".htm")) or looks_like_html:
+    head = raw[:4096]
+    head_stripped = head.lstrip().lower()
+
+    def _as_str(df: pd.DataFrame) -> pd.DataFrame:
+        return df.fillna("").astype(str)
+
+    # 1) XLSX (ZIP magic: 'PK')
+    if head.startswith(b"PK"):
         bio.seek(0)
-        tables = pd.read_html(bio, header=None, dtype=str)
-        return tables[0]
+        return _as_str(pd.read_excel(bio, sheet_name=0, engine="openpyxl", header=None))
 
-    # --- Caso 2: XLSX (motor openpyxl) ---
-    if name.endswith(".xlsx"):
+    # 2) XLS (CFBF/BIFF magic)
+    if head.startswith(b"\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1"):
         bio.seek(0)
-        return pd.read_excel(bio, header=None, dtype=str, engine="openpyxl")
-
-    # --- Caso 3: XLS binario real (motor xlrd) ---
-    if name.endswith(".xls"):
         try:
+            return _as_str(pd.read_excel(bio, sheet_name=0, engine="xlrd", header=None))
+        except Exception:
+            # Último intento sin engine (por si estuviera disponible)
             bio.seek(0)
-            return pd.read_excel(bio, header=None, dtype=str, engine="xlrd")
-        except Exception as e:
-            raise ValueError(
-                "No pude leer el archivo .xls con formato binario. "
-                "Parece un .xls exportado como HTML (STAR 1). "
-                "Vuelve a exportarlo como Excel real o usa .xlsx.\n"
-                f"Detalle: {e}"
-            )
+            return _as_str(pd.read_excel(bio, sheet_name=0, header=None))
 
-    # --- Caso 4: Intentos finales según contenido ---
-    # 4.1 intentar openpyxl
-    try:
-        bio.seek(0)
-        return pd.read_excel(bio, header=None, dtype=str, engine="openpyxl")
-    except Exception:
-        pass
-
-    # 4.2 intentar xlrd
-    try:
-        bio.seek(0)
-        return pd.read_excel(bio, header=None, dtype=str, engine="xlrd")
-    except Exception:
-        pass
-
-    # 4.3 intentar como HTML genérico
-    try:
-        bio.seek(0)
-        tables = pd.read_html(bio, header=None, dtype=str)
-        return tables[0]
-    except Exception:
-        pass
-
-    # Si nada funcionó
-    raise ValueError(
-        "Formato no soportado. Usa .xlsx (recomendado), o .xls/.html/.htm válidos."
+    # 3) ¿HTML (incluye .xls "disfrazado")?
+    is_html = (
+        head_stripped.startswith(b"<!doctype html")
+        or head_stripped.startswith(b"<html")
+        or (b"<table" in head_stripped[:1024])
+        or (b"xmlns:x=\"urn:schemas-microsoft-com:office:excel\"" in head)  # HTML "tipo Excel"
     )
+    if is_html:
+        # 3.a: intentar rápido con read_html (SIN dtype en pandas 2.x)
+        bio.seek(0)
+        try:
+            tables = pd.read_html(bio, header=None, flavor="lxml")
+            if tables:
+                return _as_str(tables[0])
+        except Exception:
+            pass
+
+        # 3.b: BeautifulSoup: encontrar la primera <table> (con o sin namespace)
+        bio.seek(0)
+        soup = BeautifulSoup(bio.read(), "lxml")
+
+        def _is_table(tag):
+            if not getattr(tag, "name", None):
+                return False
+            name = tag.name.lower()
+            return name == "table" or name.endswith(":table")
+
+        table = soup.find(_is_table)
+        if table:
+            def _match(tag, names):
+                if not getattr(tag, "name", None):
+                    return False
+                n = tag.name.lower()
+                return (n in names) or any(n.endswith(":" + nm) for nm in names)
+
+            rows = []
+            for tr in table.find_all(lambda t: _match(t, {"tr"})):
+                cells = [td.get_text(strip=True) for td in tr.find_all(lambda t: _match(t, {"td", "th"}))]
+                if cells:
+                    rows.append(cells)
+            if rows:
+                width = max(len(r) for r in rows)
+                rows = [r + [""] * (width - len(r)) for r in rows]
+                return _as_str(pd.DataFrame(rows))
+
+        # 3.c: SpreadsheetML (Excel 2003 XML) incrustado en <xml>…</xml> dentro del HTML
+        xml_block = soup.find("xml")
+        if xml_block and ("urn:schemas-microsoft-com:office:spreadsheet" in xml_block.text):
+            xml_bytes = xml_block.text.encode("utf-8", errors="ignore")
+            try:
+                tree = etree.fromstring(xml_bytes)
+            except Exception:
+                try:
+                    tree = etree.XML(xml_bytes)
+                except Exception:
+                    tree = None
+            if tree is not None:
+                ns = {"ss": "urn:schemas-microsoft-com:office:spreadsheet"}
+                table = tree.find(".//ss:Worksheet/ss:Table", namespaces=ns)
+                if table is not None:
+                    rows = []
+                    for row in table.findall("ss:Row", namespaces=ns):
+                        row_vals, cur_col = [], 1
+                        for cell in row.findall("ss:Cell", namespaces=ns):
+                            idx = cell.get("{urn:schemas-microsoft-com:office:spreadsheet}Index")
+                            if idx is not None:
+                                idx = int(idx)
+                                while cur_col < idx:
+                                    row_vals.append("")
+                                    cur_col += 1
+                            data_el = cell.find("ss:Data", namespaces=ns)
+                            val = data_el.text if data_el is not None else ""
+                            row_vals.append(val if val is not None else "")
+                            cur_col += 1
+                        rows.append(row_vals)
+                    if rows:
+                        width = max(len(r) for r in rows)
+                        rows = [r + [""] * (width - len(r)) for r in rows]
+                        return _as_str(pd.DataFrame(rows))
+
+        raise ValueError("El archivo es HTML pero no contiene una tabla utilizable.")
+
+    # 4) SpreadsheetML (XML plano, no HTML)
+    if (b"<Workbook" in head) or (b"urn:schemas-microsoft-com:office:spreadsheet" in head):
+        bio.seek(0)
+        tree = etree.parse(bio)
+        ns = {"ss": "urn:schemas-microsoft-com:office:spreadsheet"}
+        table = tree.find(".//ss:Worksheet/ss:Table", namespaces=ns)
+        if table is None:
+            raise ValueError("XML SpreadsheetML sin <Worksheet>/<Table>.")
+        rows = []
+        for row in table.findall("ss:Row", namespaces=ns):
+            row_vals, cur_col = [], 1
+            for cell in row.findall("ss:Cell", namespaces=ns):
+                idx = cell.get("{urn:schemas-microsoft-com:office:spreadsheet}Index")
+                if idx is not None:
+                    idx = int(idx)
+                    while cur_col < idx:
+                        row_vals.append("")
+                        cur_col += 1
+                data_el = cell.find("ss:Data", namespaces=ns)
+                val = data_el.text if data_el is not None else ""
+                row_vals.append(val if val is not None else "")
+                cur_col += 1
+            rows.append(row_vals)
+        if rows:
+            width = max(len(r) for r in rows)
+            rows = [r + [""] * (width - len(r)) for r in rows]
+            return _as_str(pd.DataFrame(rows))
+
+    # 5) Último intento con motores estándar
+    bio.seek(0)
+    try:
+        return _as_str(pd.read_excel(bio, sheet_name=0, engine="openpyxl", header=None))
+    except Exception:
+        bio.seek(0)
+        return _as_str(pd.read_excel(bio, sheet_name=0, engine="xlrd", header=None))
 
 # =====================================================
 # --- DETECCIÓN DEL MODO ---
