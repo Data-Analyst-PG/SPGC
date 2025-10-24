@@ -9,19 +9,33 @@ import io
 # --- Detector simple del modo por DataFrame ---
 def _detect_mode(df_raw: pd.DataFrame) -> str:
     """
-    Detecta STAR2 si, una vez adivinados los encabezados, existe 'Poliza'.
-    Si no, asume STAR1.
+    Detecta STAR 2.0 si, tras adivinar encabezados, existe una columna Poliza
+    o si la primera columna luce como 'Poliza' y la primera fila de datos (A2)
+    contiene algo tipo ': 200-...' (la Cuenta).
+    En otro caso asume STAR 1.
     """
     try:
         df_guess, _ = _guess_header(df_raw.copy())
     except Exception:
         df_guess = df_raw
 
-    cols = [str(c).strip().lower() for c in df_guess.columns]
-    if "poliza" in cols:
+    cols_norm = [str(c).strip().lower() for c in df_guess.columns]
+
+    # Señal directa por nombre de columna
+    if "poliza" in cols_norm:
         return "star2"
-    if any(re.search(r"cuenta.*concepto", c, re.IGNORECASE) for c in cols):
+
+    # Señal por estructura: primera columna tipo poliza y A2 con "Cuenta" iniciando por ": "
+    if len(df_guess.columns) >= 1 and len(df_guess) >= 1:
+        first_col_name = str(df_guess.columns[0]).strip().lower()
+        a2 = str(df_guess.iloc[0, 0])  # primera fila de datos en la 0 tras guess_header
+        if ("poliza" in first_col_name) or (a2.startswith(": ") or a2.startswith(":\u00a0")):
+            return "star2"
+
+    # fallback: STAR 1 si vemos "Cuenta / Concepto"
+    if any(re.search(r"cuenta.*concepto", c, re.IGNORECASE) for c in cols_norm):
         return "star1"
+
     return "star1"
 
 # --- Limpieza de montos a numérico seguro ---
@@ -38,70 +52,71 @@ def _to_num_safe(x):
 def process_star2_single(df_raw: pd.DataFrame) -> pd.DataFrame:
     """
     STAR 2.0:
-    - Usa _guess_header para fijar nombres de columnas (Poliza, Concepto, Cheque, ...).
-    - La cuenta está en la PRIMERA FILA DE DATOS (fila siguiente al encabezado), columna 'Poliza' (B).
-    - Quita esa fila, agrega columna 'Cuenta' con ese valor para todo el detalle.
-    - No formatea la fecha (se deja tal cual viene).
-    - Limpia montos y filtra filas sin montos.
+    - Encabezados reales con _guess_header.
+    - 'Poliza' es la PRIMERA columna.
+    - La 'Cuenta' viene en A2 (primera fila de datos, primera columna) con prefijo ': '.
+    - Quitar esa primera fila (la que trae la cuenta) y propagarla como nueva columna 'Cuenta'.
+    - NO tocar formato de 'Fecha' (se deja tal cual).
+    - Limpiar montos y filtrar filas sin montos reales.
+    - Entregar columnas en orden exacto pedido.
     """
     # 1) Encabezados correctos
-    df, header_row = _guess_header(df_raw.copy())
+    df, _ = _guess_header(df_raw.copy())
 
-    # 2) Normaliza nombres de columnas (por si vienen con mayúsculas/minúsculas)
-    rename_map = {}
-    for c in df.columns:
-        lc = str(c).strip().lower()
-        if lc == "poliza":   rename_map[c] = "Poliza"
-        if lc == "concepto": rename_map[c] = "Cuenta / Concepto"
-        if lc == "cheque":   rename_map[c] = "Cheque"
-        if lc == "trafico":  rename_map[c] = "Trafico"
-        if lc == "factura":  rename_map[c] = "Factura"
-        if lc == "fecha":    rename_map[c] = "Fecha"
-        if lc == "cargos":   rename_map[c] = "Cargos"
-        if lc == "abonos":   rename_map[c] = "Abonos"
-        if lc == "saldo":    rename_map[c] = "Saldo"
-    if rename_map:
-        df = df.rename(columns=rename_map)
+    # 2) Normalizar nombres (por si hay mayúsculas/acentos/espacios)
+    def _norm_name(c: str) -> str:
+        s = str(c).strip()
+        s_l = s.lower()
+        # mapeos simples sin dependencias
+        if s_l == "poliza":   return "Poliza"
+        if s_l == "concepto": return "Concepto"
+        if s_l == "cheque":   return "Cheque"
+        if s_l == "trafico" or "tráfico" in s_l: return "Trafico"
+        if s_l == "factura":  return "Factura"
+        if s_l == "fecha":    return "Fecha"
+        if s_l == "cargos":   return "Cargos"
+        if s_l == "abonos":   return "Abonos"
+        if s_l == "saldo":    return "Saldo"
+        return s  # lo demás se conserva
+    df = df.rename(columns={c: _norm_name(c) for c in df.columns})
 
-    # 3) Tomar cuenta de la primera fila de datos (B2 visual => fila 0 en df, col 'Poliza')
-    col_poliza = next((c for c in df.columns if str(c).strip().lower() == "poliza"), None)
+    # 3) Tomar la Cuenta desde A2 (primera fila de datos, col 0 tras guess_header)
     cuenta_text = ""
-    if col_poliza:
-        cuenta_text = str(df.iloc[0][col_poliza]) if len(df) > 0 else ""
-    # quitar prefijo ": " si existiera
-    cuenta_text = re.sub(r"^\s*:\s*", "", cuenta_text or "")
+    if len(df) > 0:
+        cuenta_text = str(df.iloc[0, 0] if df.shape[1] > 0 else "")
+    # quitar prefijo ": " o ": " (NBSP)
+    cuenta_text = re.sub(r"^\s*:\s*", "", cuenta_text or "").strip()
 
     # 4) Quitar esa primera fila (la que contenía la cuenta) y resetear
     df_det = df.iloc[1:].reset_index(drop=True)
 
-    # 5) Insertar 'Cuenta' al inicio con el valor propagado
+    # 5) Insertar columna 'Cuenta' al inicio y propagar
     if "Cuenta" not in df_det.columns:
         df_det.insert(0, "Cuenta", cuenta_text)
     else:
         df_det["Cuenta"] = cuenta_text
 
-    # 6) Eliminar filas con concepto vacío (solo por higiene)
-    if "Cuenta / Concepto" in df_det.columns:
-        df_det = df_det[df_det["Cuenta / Concepto"].astype(str).str.strip().ne("")]
+    # 6) Eliminar filas con Concepto vacío (si existe la col)
+    if "Concepto" in df_det.columns:
+        df_det = df_det[df_det["Concepto"].astype(str).str.strip().ne("")]
 
-    # 7) Normalizar montos a numérico seguro
+    # 7) Limpiar montos y filtrar por montos reales
     for col in ["Cargos", "Abonos", "Saldo"]:
         if col in df_det.columns:
             df_det[col] = df_det[col].apply(_to_num_safe)
 
-    # 8) NO tocar la fecha: se deja tal cual viene en archivo (sin to_datetime)
-    #    Si quieres vaciar NaN por estética:
-    if "Fecha" in df_det.columns:
-        df_det["Fecha"] = df_det["Fecha"].astype(str).replace({"nan": ""})
-
-    # 9) Quedarse SOLO con filas que tengan algún monto distinto de 0
     amt_cols = [c for c in ["Cargos", "Abonos", "Saldo"] if c in df_det.columns]
     if amt_cols:
         mask_nonzero = (df_det[amt_cols].fillna(0).abs().sum(axis=1) > 0)
         df_det = df_det.loc[mask_nonzero].reset_index(drop=True)
 
-    # 10) Orden sugerido de columnas
-    desired = ["Cuenta", "Poliza", "Cuenta / Concepto", "Cheque", "Trafico", "Factura", "Fecha", "Cargos", "Abonos", "Saldo"]
+    # 8) NO tocar 'Fecha': se deja tal cual viene (texto o número según Excel).
+    #    Si deseas vaciar NaN visualmente:
+    if "Fecha" in df_det.columns:
+        df_det["Fecha"] = df_det["Fecha"].astype(str).replace({"nan": ""})
+
+    # 9) Orden EXACTO de columnas para STAR 2.0
+    desired = ["Cuenta", "Poliza", "Concepto", "Cheque", "Trafico", "Factura", "Fecha", "Cargos", "Abonos", "Saldo"]
     ordered = [c for c in desired if c in df_det.columns]
     rest = [c for c in df_det.columns if c not in ordered]
     df_det = df_det[ordered + rest]
@@ -110,15 +125,11 @@ def process_star2_single(df_raw: pd.DataFrame) -> pd.DataFrame:
 
 # --- STAR 2.0: consolida varios archivos ---
 def process_star2_many(dfs_raw: list[pd.DataFrame]) -> pd.DataFrame:
-    partes = []
-    for df_raw in dfs_raw:
-        partes.append(process_star2_single(df_raw))
-    if not partes:
-        return pd.DataFrame()
-    return pd.concat(partes, ignore_index=True)
+    partes = [process_star2_single(df_raw) for df_raw in dfs_raw]
+    return pd.concat(partes, ignore_index=True) if partes else pd.DataFrame()
 
     # Orden de columnas sugerido
-    ordered = [c for c in ["Cuenta", "Poliza", "Cuenta / Concepto", "Cheque", "Trafico", "Factura", "Fecha", "Cargos", "Abonos", "Saldo"] if c in out.columns]
+    ordered = [c for c in ["Cuenta", "Poliza", "Cuenta / Concepto", "Concepto" "Cheque", "Trafico", "Factura", "Fecha", "Cargos", "Abonos", "Saldo"] if c in out.columns]
     rest = [c for c in out.columns if c not in ordered]
     out = out[ordered + rest]
     return out
@@ -476,7 +487,6 @@ else:
         # Leer todos a DF crudos
         raws = [_read_excel_any(up) for up in uploaded_files]
 
-        # Modo efectivo
         if mode.startswith("Auto"):
             eff_mode = _detect_mode(raws[0])
         elif mode.startswith("STAR 1"):
@@ -484,14 +494,12 @@ else:
         else:
             eff_mode = "star2"
 
-        # Procesar
         if eff_mode == "star1":
             if len(raws) > 1:
                 st.warning("Modo STAR 1: se tomará solo el primer archivo.")
-            df_clean = process_report(raws[0])  # tu función STAR1 ya existente
+            df_clean = process_report(raws[0])      # tu función STAR 1 ya afinada
         else:
-            df_clean = process_star2_many(raws)
-
+            df_clean = process_star2_many(raws)     # consolida y ordena columnas
 
         st.success(f"✅ Listo. Filas finales: {len(df_clean):,}")
         st.dataframe(df_clean.head(1000), use_container_width=True)
