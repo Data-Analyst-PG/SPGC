@@ -9,26 +9,72 @@ import io
 # =====================================================
 
 def _to_num_safe(x):
-    """Convierte a número sin romper por comas o símbolos."""
+    """Convierte a float tolerando comas/$. NaN -> 0.0"""
     if pd.isna(x):
         return 0.0
     s = str(x).replace(",", "").replace("$", "").strip()
     try:
         return float(s)
-    except ValueError:
+    except Exception:
         return 0.0
 
 
-def _read_excel_any(file):
-    """Lee .xls/.xlsx/.html de STAR 1 o STAR 2.0 en DataFrame."""
-    name = file.name.lower()
-    if name.endswith((".xls", ".xlsx")):
-        return pd.read_excel(file, header=None, dtype=str)
-    elif name.endswith((".html", ".htm")):
-        tables = pd.read_html(file, header=None, dtype=str)
+def _read_excel_any(uploaded):
+    """
+    Lee .xls, .xlsx, .html, .htm desde un UploadedFile de Streamlit.
+    Usa engines modernos y mensajes claros si falta soporte para .xls.
+    Devuelve DataFrame con dtype=str y sin encabezado (header=None).
+    """
+    # Conserva el buffer del archivo de Streamlit
+    data = uploaded.read()
+    bio = BytesIO(data)
+
+    name = (uploaded.name or "").lower()
+
+    # HTML/HTM
+    if name.endswith((".html", ".htm")):
+        bio.seek(0)
+        tables = pd.read_html(bio, header=None, dtype=str)
         return tables[0]
-    else:
-        raise ValueError("Formato no soportado: debe ser .xls, .xlsx o .html")
+
+    # XLSX (openpyxl)
+    if name.endswith(".xlsx"):
+        bio.seek(0)
+        return pd.read_excel(bio, header=None, dtype=str, engine="openpyxl")
+
+    # XLS (xlrd)
+    if name.endswith(".xls"):
+        try:
+            bio.seek(0)
+            return pd.read_excel(bio, header=None, dtype=str, engine="xlrd")
+        except Exception as e:
+            raise ValueError(
+                "No pude leer .xls. Instala xlrd (soporta .xls) o convierte a .xlsx. "
+                f"Detalle: {e}"
+            )
+
+    # Intento por contenido si la extensión viene rara
+    # 1) probar openpyxl
+    try:
+        bio.seek(0)
+        return pd.read_excel(bio, header=None, dtype=str, engine="openpyxl")
+    except Exception:
+        pass
+    # 2) probar xlrd
+    try:
+        bio.seek(0)
+        return pd.read_excel(bio, header=None, dtype=str, engine="xlrd")
+    except Exception:
+        pass
+    # 3) probar como HTML
+    try:
+        bio.seek(0)
+        tables = pd.read_html(bio, header=None, dtype=str)
+        return tables[0]
+    except Exception:
+        pass
+
+    raise ValueError("Formato no soportado. Usa .xlsx (recomendado), .xls (con xlrd), o .html/.htm.")
 
 
 # =====================================================
@@ -36,7 +82,7 @@ def _read_excel_any(file):
 # =====================================================
 
 def _detect_mode(df_raw: pd.DataFrame) -> str:
-    """Detecta STAR 1 o STAR 2.0 según encabezados o celdas iniciales."""
+    """Detecta STAR 1 o STAR 2.0 por encabezados o contenido A2."""
     try:
         df_guess, _ = _guess_header(df_raw.copy())
     except Exception:
@@ -44,19 +90,16 @@ def _detect_mode(df_raw: pd.DataFrame) -> str:
 
     cols_norm = [str(c).strip().lower().replace("\xa0", " ") for c in df_guess.columns]
 
-    # Señal directa
     if any(c == "poliza" for c in cols_norm):
         return "star2"
 
-    # A2 con cuenta
     if len(df_guess.index) >= 1 and len(df_guess.columns) >= 1:
-        a2 = str(df_guess.iloc[0, 0])
+        a2 = str(df_guess.iloc[0, 0] if df_guess.shape[1] > 0 else "")
         if a2.replace("\xa0", " ").strip().startswith(":"):
             return "star2"
 
-    # Encabezado típico
     header_join = " ".join(cols_norm)
-    if ("poliza" in header_join and "concepto" in header_join):
+    if ("poliza" in header_join and "concepto" in header_join) or ("poliza" in header_join and "fecha" in header_join):
         return "star2"
 
     return "star1"
@@ -65,25 +108,36 @@ def _detect_mode(df_raw: pd.DataFrame) -> str:
 def _guess_header(df):
     """Encuentra la fila de encabezados tanto para STAR 1 como STAR 2.0."""
     header_idx = None
-    for i in range(min(12, len(df))):
+    limit = min(12, len(df))
+
+    for i in range(limit):
         row_vals = df.iloc[i].astype(str).str.replace("\xa0", " ", regex=False).str.strip().tolist()
-        row_join = " ".join(row_vals)
-        if re.search(r"cuenta.*concepto", row_join, re.IGNORECASE):
+        row_join = " ".join([v for v in row_vals if v and v.lower() != "nan"])
+
+        if re.search(r"cuenta.*concepto", row_join, re.IGNORECASE) and re.search(
+            r"(saldo|cargos|abonos)", row_join, re.IGNORECASE
+        ):
             header_idx = i
             break
-        if re.search(r"poliza", row_join, re.IGNORECASE) and re.search(r"(concepto|fecha|cargos|abonos)", row_join, re.IGNORECASE):
+
+        if re.search(r"\bpoliza\b", row_join, re.IGNORECASE) and re.search(
+            r"\b(concepto|fecha|saldo|cargos|abonos)\b", row_join, re.IGNORECASE
+        ):
             header_idx = i
             break
 
     if header_idx is not None:
         new_cols = df.iloc[header_idx].astype(str).str.replace("\xa0", " ", regex=False).str.strip().tolist()
+        new_cols = [c if c and c.lower() != "nan" else f"col{j}" for j, c in enumerate(new_cols)]
         df2 = df.iloc[header_idx + 1:].reset_index(drop=True)
-        df2.columns = new_cols[:df2.shape[1]]
+        df2.columns = new_cols[: df2.shape[1]]
         return df2, list(df2.columns)
 
     base_cols = ["Cuenta / Concepto", "Cheque", "Trafico", "Factura", "Fecha", "Cargos", "Abonos", "Saldo"]
-    df.columns = base_cols[:df.shape[1]]
-    return df, list(df.columns)
+    cols = base_cols + [f"col{j}" for j in range(len(base_cols), df.shape[1])]
+    df2 = df.copy()
+    df2.columns = cols[: df.shape[1]]
+    return df2, list(df2.columns)
 
 
 # =====================================================
@@ -91,35 +145,40 @@ def _guess_header(df):
 # =====================================================
 
 def process_star2_single(df_raw: pd.DataFrame) -> pd.DataFrame:
+    """
+    - Extrae Cuenta desde A2 (quitando ':', 'Cuenta:', NBSP).
+    - Elimina esa fila, agrega 'Cuenta' al inicio y ordena columnas.
+    """
     df, _ = _guess_header(df_raw.copy())
 
-    def _norm(c):
+    def _norm_name(c: str) -> str:
         s = str(c).strip().replace("\xa0", " ")
-        mapping = {
-            "poliza": "Poliza",
-            "concepto": "Concepto",
-            "cheque": "Cheque",
-            "trafico": "Trafico",
-            "tráfico": "Trafico",
-            "factura": "Factura",
-            "fecha": "Fecha",
-            "cargos": "Cargos",
-            "abonos": "Abonos",
-            "saldo": "Saldo",
-        }
-        return mapping.get(s.lower(), s)
+        s_l = s.lower()
+        if s_l == "poliza":   return "Poliza"
+        if s_l == "concepto": return "Concepto"
+        if s_l == "cheque":   return "Cheque"
+        if s_l in ("trafico", "tráfico"): return "Trafico"
+        if s_l == "factura":  return "Factura"
+        if s_l == "fecha":    return "Fecha"
+        if s_l == "cargos":   return "Cargos"
+        if s_l == "abonos":   return "Abonos"
+        if s_l == "saldo":    return "Saldo"
+        return s
 
-    df = df.rename(columns={c: _norm(c) for c in df.columns})
+    df = df.rename(columns={c: _norm_name(c) for c in df.columns})
 
     # Cuenta en A2
     cuenta_text = ""
-    if len(df) > 0:
+    if len(df) > 0 and df.shape[1] > 0:
         a2 = str(df.iloc[0, 0]).replace("\xa0", " ").strip()
         a2 = re.sub(r"^(cuenta\s*:|:)\s*", "", a2, flags=re.IGNORECASE).strip()
         cuenta_text = a2
 
     df_det = df.iloc[1:].reset_index(drop=True)
-    df_det.insert(0, "Cuenta", cuenta_text)
+    if "Cuenta" not in df_det.columns:
+        df_det.insert(0, "Cuenta", cuenta_text)
+    else:
+        df_det["Cuenta"] = cuenta_text
 
     if "Concepto" in df_det.columns:
         df_det = df_det[df_det["Concepto"].astype(str).str.strip().ne("")]
@@ -132,16 +191,17 @@ def process_star2_single(df_raw: pd.DataFrame) -> pd.DataFrame:
     if amt_cols:
         df_det = df_det[df_det[amt_cols].fillna(0).abs().sum(axis=1) > 0]
 
-    order = ["Cuenta", "Poliza", "Concepto", "Cheque", "Trafico", "Factura", "Fecha", "Cargos", "Abonos", "Saldo"]
-    return df_det[[c for c in order if c in df_det.columns]]
+    desired = ["Cuenta", "Poliza", "Concepto", "Cheque", "Trafico", "Factura", "Fecha", "Cargos", "Abonos", "Saldo"]
+    ordered = [c for c in desired if c in df_det.columns]
+    rest = [c for c in df_det.columns if c not in ordered]
+    return df_det[ordered + rest]
 
 
 def process_star2_many(raws):
-    all_data = []
-    for df_raw in raws:
-        df = process_star2_single(df_raw)
-        all_data.append(df)
-    return pd.concat(all_data, ignore_index=True)
+    frames = [process_star2_single(df_raw) for df_raw in raws]
+    if not frames:
+        return pd.DataFrame(columns=["Cuenta", "Poliza", "Concepto", "Cheque", "Trafico", "Factura", "Fecha", "Cargos", "Abonos", "Saldo"])
+    return pd.concat(frames, ignore_index=True)
 
 
 # =====================================================
@@ -149,11 +209,16 @@ def process_star2_many(raws):
 # =====================================================
 
 def _normalize_date_series(s: pd.Series) -> pd.Series:
+    """
+    Convierte a dd/mm/yyyy respetando dayfirst e incluye seriales de Excel.
+    """
     s2 = s.copy()
+
     as_num = pd.to_numeric(s2, errors="coerce")
     mask_num = as_num.notna()
     if mask_num.any():
         s2.loc[mask_num] = pd.to_datetime(as_num[mask_num], unit="d", origin="1899-12-30").dt.strftime("%d/%m/%Y")
+
     mask_txt = ~mask_num
     if mask_txt.any():
         parsed = pd.to_datetime(s2[mask_txt].astype(str).str.strip(), errors="coerce", dayfirst=True)
@@ -163,14 +228,22 @@ def _normalize_date_series(s: pd.Series) -> pd.Series:
             parsed.loc[need_retry] = parsed2
         s2.loc[mask_txt] = parsed.dt.strftime("%d/%m/%Y")
         s2 = s2.replace({"NaT": ""})
+
     return s2
 
 
 def process_report(df_raw):
+    """
+    STAR 1: limpia encabezados/sumarios, propaga Cuenta,
+    normaliza montos y FECHA (dd/mm/yyyy).
+    """
     df = df_raw.copy()
+
     if len(df) > 0:
         df = df.iloc[1:].reset_index(drop=True)
+
     df, _ = _guess_header(df)
+
     if "Cuenta" not in df.columns:
         df.insert(0, "Cuenta", "")
 
@@ -180,28 +253,38 @@ def process_report(df_raw):
                 return c
         return default
 
-    col_cc = find_col(r"cuenta.*concepto", df.columns[1] if len(df.columns) > 1 else df.columns[0])
+    col_cc     = find_col(r"cuenta.*concepto", df.columns[1] if len(df.columns) > 1 else df.columns[0])
     col_cheque = find_col(r"cheq")
-    col_traf = find_col(r"traf")
-    col_fact = find_col(r"fact")
+    col_traf   = find_col(r"traf")
+    col_fact   = find_col(r"fact")
     col_cargos = find_col(r"cargos")
     col_abonos = find_col(r"abonos")
-    col_saldo = find_col(r"saldo")
+    col_saldo  = find_col(r"saldo")
 
     cuenta_pat = re.compile(r"^\s*\d{3}-\d{2}-\d{2}-\d{3}-\d{2}-\d{3}-\d{4}\s+-\s+.+", re.IGNORECASE)
 
     last_cuenta = None
     rows_to_drop = []
+
     for idx, val in df[col_cc].astype(str).items():
         text = val.replace("\xa0", " ").strip()
+
         if cuenta_pat.match(text):
             last_cuenta = text
             rows_to_drop.append(idx)
             continue
-        if text.lower() in {"saldo", "sumas totales"}:
+
+        is_summary_word = text.lower() in {"saldo", "sumas totales"}
+        has_detail_refs = any(
+            c and str(df.at[idx, c]).strip() not in {"", "nan", "None"}
+            for c in [col_cheque, col_traf, col_fact]
+        )
+
+        if is_summary_word and not has_detail_refs:
             rows_to_drop.append(idx)
             continue
-        df.at[idx, "Cuenta"] = last_cuenta or "__SIN_CUENTA__"
+
+        df.at[idx, "Cuenta"] = last_cuenta if last_cuenta else "__SIN_CUENTA_DETECTADA__"
 
     df = df.drop(index=rows_to_drop).reset_index(drop=True)
 
@@ -215,7 +298,22 @@ def process_report(df_raw):
 
     amt_cols = [c for c in [col_cargos, col_abonos, col_saldo] if c]
     if amt_cols:
-        df = df[df[amt_cols].fillna(0).abs().sum(axis=1) > 0]
+        for c in amt_cols:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+        if col_cc in df.columns:
+            df = df[df[col_cc].astype(str).str.strip().ne("")]
+        df = df[df[amt_cols].fillna(0).abs().sum(axis=1) > 0].reset_index(drop=True)
+
+    non_cuenta_cols = [c for c in df.columns if c != "Cuenta"]
+    def _row_is_empty(series):
+        for v in series.values:
+            s = str(v).replace("\xa0", " ").strip().lower()
+            if s not in {"", "nan", "none"}:
+                return False
+        return True
+
+    df["__empty__"] = df[non_cuenta_cols].astype(str).apply(_row_is_empty, axis=1)
+    df = df.loc[~df["__empty__"]].drop(columns="__empty__").reset_index(drop=True)
 
     first_cols = ["Cuenta"]
     rest = [c for c in df.columns if c not in first_cols]
@@ -243,6 +341,7 @@ if not uploaded_files:
     st.info("Sube tus archivos para procesar.\n\n• **STAR 1**: un solo archivo con todas las cuentas.\n• **STAR 2.0**: varios archivos (uno por cuenta) y los consolidamos.")
 else:
     try:
+        # Leer todos a DF crudos
         raws = [_read_excel_any(up) for up in uploaded_files]
 
         if mode.startswith("Auto"):
@@ -255,9 +354,9 @@ else:
         if eff_mode == "star1":
             if len(raws) > 1:
                 st.warning("Modo STAR 1: se tomará solo el primer archivo.")
-            df_clean = process_report(raws[0])
+            df_clean = process_report(raws[0])      # STAR 1
         else:
-            df_clean = process_star2_many(raws)
+            df_clean = process_star2_many(raws)     # STAR 2.0 (consolidado)
 
         st.success(f"✅ Listo. Filas finales: {len(df_clean):,}")
         st.dataframe(df_clean.head(1000), use_container_width=True)
