@@ -8,9 +8,15 @@ from email.message import EmailMessage
 
 # ====== SUPABASE CLIENT ======
 def get_supabase_client() -> Client:
-    # Puedes usar st.secrets o variables de entorno, según tengas
-    url = st.secrets.get("SUPABASE_URL", os.getenv("SUPABASE_URL"))
-    key = st.secrets.get("SUPABASE_KEY", os.getenv("SUPABASE_KEY"))
+    # Primero intenta con st.secrets (recomendado en Streamlit)
+    try:
+        url = st.secrets["SUPABASE_URL"]
+        key = st.secrets["SUPABASE_KEY"]
+    except Exception:
+        # Fallback a variables de entorno
+        url = os.getenv("SUPABASE_URL")
+        key = os.getenv("SUPABASE_KEY")
+
     if not url or not key:
         st.error("Faltan SUPABASE_URL o SUPABASE_KEY en secrets/variables de entorno.")
         st.stop()
@@ -19,11 +25,17 @@ def get_supabase_client() -> Client:
 supabase = get_supabase_client()
 
 # ====== CONFIG CORREO (puedes apagarlo con ENABLE_EMAIL) ======
-ENABLE_EMAIL = st.secrets.get("ENABLE_EMAIL", os.getenv("ENABLE_EMAIL", "false")).lower() == "true"
-SMTP_HOST = st.secrets.get("SMTP_HOST", os.getenv("SMTP_HOST"))
-SMTP_PORT = int(st.secrets.get("SMTP_PORT", os.getenv("SMTP_PORT", "587")))
-SMTP_USER = st.secrets.get("SMTP_USER", os.getenv("SMTP_USER"))   # cuenta genérica
-SMTP_PASSWORD = st.secrets.get("SMTP_PASSWORD", os.getenv("SMTP_PASSWORD"))
+def _get_secret(name: str, default: str | None = None) -> str | None:
+    try:
+        return st.secrets[name]
+    except Exception:
+        return os.getenv(name, default)
+
+ENABLE_EMAIL = (_get_secret("ENABLE_EMAIL", "false") or "false").lower() == "true"
+SMTP_HOST = _get_secret("SMTP_HOST")
+SMTP_PORT = int(_get_secret("SMTP_PORT", "587"))
+SMTP_USER = _get_secret("SMTP_USER")   # cuenta genérica
+SMTP_PASSWORD = _get_secret("SMTP_PASSWORD")
 
 
 def folio_visible_from_id(row_id: int) -> str:
@@ -97,6 +109,8 @@ Fecha de captura: {data.get('fecha_captura')}
         return True, None
     except Exception as e:
         return False, str(e)
+
+
 def modulo_solicitud_complementaria():
     st.header("Solicitud de factura complementaria")
 
@@ -162,8 +176,7 @@ def modulo_solicitud_complementaria():
     try:
         bucket_pdf = supabase.storage.from_("complementarias")
         pdf_path = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{factura_pdf.name}"
-        upload_res = bucket_pdf.upload(pdf_path, factura_pdf.getvalue())
-        # si no lanza excepción, asumimos éxito
+        bucket_pdf.upload(pdf_path, factura_pdf.getvalue())
         factura_url = bucket_pdf.get_public_url(pdf_path)
     except Exception as e:
         st.warning(f"No se pudo subir el PDF a Storage: {e}")
@@ -182,7 +195,6 @@ def modulo_solicitud_complementaria():
                 st.warning(f"No se pudo subir la evidencia {img.name}: {e}")
 
     # ===== 3) Insertar registro en la tabla =====
-    # Ponemos folio temporal, luego lo actualizamos con el id
     data_insert = {
         "folio": "PENDIENTE",
         "empresa": empresa,
@@ -221,7 +233,6 @@ def modulo_solicitud_complementaria():
     except Exception as e:
         st.warning(f"La solicitud se guardó, pero no se pudo actualizar el folio: {e}")
 
-    # Actualizamos el dict para usarlo en el correo
     data_insert["folio"] = folio_def
 
     # ===== 5) Enviar correo (opcional) =====
