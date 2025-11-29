@@ -24,6 +24,9 @@ def get_supabase_client() -> Client:
 
 supabase = get_supabase_client()
 
+def modulo_solicitud_complementaria():
+    st.header("Solicitud de factura complementaria")
+
 # ====== CONFIG CORREO (puedes apagarlo con ENABLE_EMAIL) ======
 def _get_secret(name: str, default: str | None = None) -> str | None:
     try:
