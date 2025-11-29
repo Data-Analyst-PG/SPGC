@@ -24,9 +24,6 @@ def get_supabase_client() -> Client:
 
 supabase = get_supabase_client()
 
-def modulo_solicitud_complementaria():
-    st.header("Solicitud de factura complementaria")
-
 # ====== CONFIG CORREO (puedes apagarlo con ENABLE_EMAIL) ======
 def _get_secret(name: str, default: str | None = None) -> str | None:
     try:
@@ -114,137 +111,139 @@ Fecha de captura: {data.get('fecha_captura')}
         return False, str(e)
 
 
-def modulo_solicitud_complementaria():
-    st.header("Solicitud de factura complementaria")
+# ===========================
+#  UI DE LA PÁGINA (FORM)
+# ===========================
+st.header("Solicitud de factura complementaria")
 
-    with st.form("form_solicitud_complementaria"):
-        empresa = st.selectbox(
-            "Empresa",
-            ["Set Freight", "Lincoln", "Set Logis", "Picus", "Igloo"],
-            index=None,
-            placeholder="Selecciona una empresa"
-        )
+with st.form("form_solicitud_complementaria"):
+    empresa = st.selectbox(
+        "Empresa",
+        ["Set Freight", "Lincoln", "Set Logis", "Picus", "Igloo"],
+        index=None,
+        placeholder="Selecciona una empresa"
+    )
 
-        numero_trafico = st.text_input("Número de tráfico")
-        factura_pdf = st.file_uploader(
-            "Factura archivo (PDF)",
-            type=["pdf"],
-            accept_multiple_files=False
-        )
+    numero_trafico = st.text_input("Número de tráfico")
+    factura_pdf = st.file_uploader(
+        "Factura archivo (PDF)",
+        type=["pdf"],
+        accept_multiple_files=False
+    )
 
-        concepto_correcto = st.text_input("Concepto correcto")
-        monto_correcto = st.number_input("Monto correcto", min_value=0.0, step=0.01, format="%.2f")
-        proveedor_correcto = st.text_input("Proveedor correcto")
-        motivo_modificacion = st.text_area("Motivo de la modificación")
+    concepto_correcto = st.text_input("Concepto correcto")
+    monto_correcto = st.number_input("Monto correcto", min_value=0.0, step=0.01, format="%.2f")
+    proveedor_correcto = st.text_input("Proveedor correcto")
+    motivo_modificacion = st.text_area("Motivo de la modificación")
 
-        nombre_solicitante = st.text_input("Nombre del solicitante")
-        correo_solicitante = st.text_input("Correo del solicitante")
+    nombre_solicitante = st.text_input("Nombre del solicitante")
+    correo_solicitante = st.text_input("Correo del solicitante")
 
-        link_hilo_correo = st.text_input("Link del hilo de correo (Outlook / OWA)")
-        link_evidencias = st.text_area("Links de fotos / evidencias (opcional)")
+    link_hilo_correo = st.text_input("Link del hilo de correo (Outlook / OWA)")
+    link_evidencias = st.text_area("Links de fotos / evidencias (opcional)")
 
-        evidencias_files = st.file_uploader(
-            "Subir fotos / evidencias (opcional)",
-            type=["jpg", "jpeg", "png"],
-            accept_multiple_files=True
-        )
+    evidencias_files = st.file_uploader(
+        "Subir fotos / evidencias (opcional)",
+        type=["jpg", "jpeg", "png"],
+        accept_multiple_files=True
+    )
 
-        submitted = st.form_submit_button("Enviar solicitud")
+    submitted = st.form_submit_button("Enviar solicitud")
 
-    if not submitted:
-        return
+if not submitted:
+    st.stop()   # Termina aquí si no han enviado el formulario
 
-    # ===== Validaciones mínimas =====
-    if not empresa:
-        st.error("Debes seleccionar una empresa.")
-        return
-    if not numero_trafico:
-        st.error("El campo 'Número de tráfico' es obligatorio.")
-        return
-    if factura_pdf is None:
-        st.error("Debes subir el PDF de la factura.")
-        return
-    if not motivo_modificacion:
-        st.error("Por favor indica el motivo de la modificación.")
-        return
-    if not nombre_solicitante or not correo_solicitante:
-        st.error("Nombre y correo del solicitante son obligatorios.")
-        return
+# ===== Validaciones mínimas =====
+if not empresa:
+    st.error("Debes seleccionar una empresa.")
+    st.stop()
+if not numero_trafico:
+    st.error("El campo 'Número de tráfico' es obligatorio.")
+    st.stop()
+if factura_pdf is None:
+    st.error("Debes subir el PDF de la factura.")
+    st.stop()
+if not motivo_modificacion:
+    st.error("Por favor indica el motivo de la modificación.")
+    st.stop()
+if not nombre_solicitante or not correo_solicitante:
+    st.error("Nombre y correo del solicitante son obligatorios.")
+    st.stop()
 
-    fecha_captura = datetime.now(timezone.utc).isoformat()
-    estatus_inicial = "Pendiente"
+fecha_captura = datetime.now(timezone.utc).isoformat()
+estatus_inicial = "Pendiente"
 
-    # ===== 1) Subir PDF a Storage =====
-    factura_url = None
-    try:
-        bucket_pdf = supabase.storage.from_("complementarias")
-        pdf_path = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{factura_pdf.name}"
-        bucket_pdf.upload(pdf_path, factura_pdf.getvalue())
-        factura_url = bucket_pdf.get_public_url(pdf_path)
-    except Exception as e:
-        st.warning(f"No se pudo subir el PDF a Storage: {e}")
+# ===== 1) Subir PDF a Storage =====
+factura_url = None
+try:
+    bucket_pdf = supabase.storage.from_("complementarias")
+    pdf_path = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{factura_pdf.name}"
+    bucket_pdf.upload(pdf_path, factura_pdf.getvalue())
+    factura_url = bucket_pdf.get_public_url(pdf_path)
+except Exception as e:
+    st.warning(f"No se pudo subir el PDF a Storage: {e}")
 
-    # ===== 2) Subir evidencias (imágenes) =====
-    evidencias_urls = []
-    if evidencias_files:
-        bucket_img = supabase.storage.from_("complementarias-evidencias")
-        for i, img in enumerate(evidencias_files, start=1):
-            try:
-                img_path = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_evidencia_{i}_{img.name}"
-                bucket_img.upload(img_path, img.getvalue())
-                url = bucket_img.get_public_url(img_path)
-                evidencias_urls.append(url)
-            except Exception as e:
-                st.warning(f"No se pudo subir la evidencia {img.name}: {e}")
+# ===== 2) Subir evidencias (imágenes) =====
+evidencias_urls = []
+if evidencias_files:
+    bucket_img = supabase.storage.from_("complementarias-evidencias")
+    for i, img in enumerate(evidencias_files, start=1):
+        try:
+            img_path = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_evidencia_{i}_{img.name}"
+            bucket_img.upload(img_path, img.getvalue())
+            url = bucket_img.get_public_url(img_path)
+            evidencias_urls.append(url)
+        except Exception as e:
+            st.warning(f"No se pudo subir la evidencia {img.name}: {e}")
 
-    # ===== 3) Insertar registro en la tabla =====
-    data_insert = {
-        "folio": "PENDIENTE",
-        "empresa": empresa,
-        "numero_trafico": numero_trafico,
-        "factura_archivo": factura_url,
-        "concepto_correcto": concepto_correcto,
-        "monto_correcto": float(monto_correcto),
-        "proveedor_correcto": proveedor_correcto,
-        "motivo_modificacion": motivo_modificacion,
-        "nombre_solicitante": nombre_solicitante,
-        "correo_solicitante": correo_solicitante,
-        "link_hilo_correo": link_hilo_correo,
-        "link_evidencias": link_evidencias,
-        "evidencias_urls": evidencias_urls or None,
-        "estatus": estatus_inicial,
-        "fecha_captura": fecha_captura,
-        "fecha_resuelto": None,
-        "auditor": None,
-    }
+# ===== 3) Insertar registro en la tabla =====
+data_insert = {
+    "folio": "PENDIENTE",
+    "empresa": empresa,
+    "numero_trafico": numero_trafico,
+    "factura_archivo": factura_url,
+    "concepto_correcto": concepto_correcto,
+    "monto_correcto": float(monto_correcto),
+    "proveedor_correcto": proveedor_correcto,
+    "motivo_modificacion": motivo_modificacion,
+    "nombre_solicitante": nombre_solicitante,
+    "correo_solicitante": correo_solicitante,
+    "link_hilo_correo": link_hilo_correo,
+    "link_evidencias": link_evidencias,
+    "evidencias_urls": evidencias_urls or None,
+    "estatus": estatus_inicial,
+    "fecha_captura": fecha_captura,
+    "fecha_resuelto": None,
+    "auditor": None,
+}
 
-    try:
-        res = supabase.table("solicitudes_complementarias").insert(data_insert).execute()
-        if not res.data:
-            st.error("No se pudo insertar la solicitud en la base de datos.")
-            return
-        row = res.data[0]
-        row_id = row["id"]
-    except Exception as e:
-        st.error(f"Error al guardar en la base de datos: {e}")
-        return
+try:
+    res = supabase.table("solicitudes_complementarias").insert(data_insert).execute()
+    if not res.data:
+        st.error("No se pudo insertar la solicitud en la base de datos.")
+        st.stop()
+    row = res.data[0]
+    row_id = row["id"]
+except Exception as e:
+    st.error(f"Error al guardar en la base de datos: {e}")
+    st.stop()
 
-    # ===== 4) Actualizar folio con formato #00001 =====
-    folio_def = folio_visible_from_id(row_id)
-    try:
-        supabase.table("solicitudes_complementarias").update({"folio": folio_def}).eq("id", row_id).execute()
-    except Exception as e:
-        st.warning(f"La solicitud se guardó, pero no se pudo actualizar el folio: {e}")
+# ===== 4) Actualizar folio con formato #00001 =====
+folio_def = folio_visible_from_id(row_id)
+try:
+    supabase.table("solicitudes_complementarias").update({"folio": folio_def}).eq("id", row_id).execute()
+except Exception as e:
+    st.warning(f"La solicitud se guardó, pero no se pudo actualizar el folio: {e}")
 
-    data_insert["folio"] = folio_def
+data_insert["folio"] = folio_def
 
-    # ===== 5) Enviar correo (opcional) =====
-    ok_mail, mail_error = enviar_correo_solicitud(data_insert, factura_pdf=factura_pdf)
+# ===== 5) Enviar correo (opcional) =====
+ok_mail, mail_error = enviar_correo_solicitud(data_insert, factura_pdf=factura_pdf)
 
-    if ok_mail:
-        st.success(f"Solicitud registrada correctamente. Folio: {folio_def}")
-    else:
-        st.warning(
-            f"Solicitud registrada correctamente. Folio: {folio_def}\n"
-            f"Pero hubo un problema al enviar el correo: {mail_error}"
-        )
+if ok_mail:
+    st.success(f"Solicitud registrada correctamente. Folio: {folio_def}")
+else:
+    st.warning(
+        f"Solicitud registrada correctamente. Folio: {folio_def}\n"
+        f"Pero hubo un problema al enviar el correo: {mail_error}"
+    )
