@@ -647,3 +647,238 @@ else:
                         "officedocument.spreadsheetml.sheet"
                     ),
                 )
+# ============================================================
+# 5️⃣ ASIGNACIÓN DE CI A NIVEL VIAJE
+# ============================================================
+st.header("5️⃣ Asignación de CI a nivel viaje")
+
+# Lista de operadores a excluir
+OPERADORES_EXCLUIR = {
+    "ERICK LARA",
+    "JULIETA REYNA",
+    "GLADYS GUTIERREZ",
+    "JUAN EDUARDO VILLARREAL VALDEZ",
+    "LUIS ALDO VELIZ DE LEON",
+    "VICTOR CHAVEZ SILVA",
+    "ANETTE ROJO",
+    "LUIS EDUARDO GUTIERREZ RAMIREZ",
+    "GABRIEL ACOSTA VITAL",
+    "GRISELDA JIMENEZ",
+}
+
+# Validar que tenemos todo lo necesario
+faltan_requisitos = []
+if st.session_state.get("costo_no_op_x_milla") is None:
+    faltan_requisitos.append("Costo unitario por milla (paso 2).")
+if st.session_state.get("costo_no_op_x_viaje_sin") is None:
+    faltan_requisitos.append("Costo unitario por viaje sin unidad (paso 2).")
+if "asignaciones_df" not in st.session_state or "conceptos_tipos" not in st.session_state:
+    faltan_requisitos.append("Prorrateo por cliente (paso 4).")
+
+if faltan_requisitos:
+    st.info(
+        "Para usar este apartado necesitas haber completado:\n- "
+        + "\n- ".join(faltan_requisitos)
+    )
+else:
+    file_trips = st.file_uploader(
+        "Sube la base de viajes a nivel detalle (ej. DATA LINCOLN 2025..xlsx)",
+        type=["xlsx"],
+        key="file_trips_ci",
+    )
+
+    if file_trips:
+        try:
+            xls_trips = pd.ExcelFile(file_trips)
+            hoja_trips = st.selectbox(
+                "Hoja con los viajes detallados",
+                xls_trips.sheet_names,
+            )
+            df_trips = pd.read_excel(xls_trips, sheet_name=hoja_trips)
+            df_trips.columns = df_trips.columns.astype(str)
+
+            st.subheader("Vista previa viajes")
+            st.dataframe(df_trips.head(), use_container_width=True)
+
+            # Buscar columnas clave
+            col_customer = find_column(df_trips, ["Customer"])
+            col_trip = find_column(df_trips, ["Trip Number", "Trip number", "TripNumber"])
+            col_operador = find_column(
+                df_trips,
+                [
+                    "Operador logistico",
+                    "Operador logístico",
+                    "OPERADOR LOGISTICO",
+                    "Operador_Logistico",
+                ],
+            )
+            col_unit = find_column(df_trips, ["Unit", "Unidad"])
+            col_trailer = find_column(df_trips, ["Trailer", "Remolque"])
+            col_miles = find_column(
+                df_trips,
+                ["Real Miles", "Real miles", "REAL MILES", "Miles reales", "Real_miles"],
+            )
+
+            columnas_faltan = []
+            if col_customer is None:
+                columnas_faltan.append("Customer")
+            if col_trip is None:
+                columnas_faltan.append("Trip Number")
+            if col_operador is None:
+                columnas_faltan.append("Operador logistico")
+            if col_unit is None:
+                columnas_faltan.append("Unit")
+            if col_trailer is None:
+                columnas_faltan.append("Trailer")
+            if col_miles is None:
+                columnas_faltan.append("Real Miles")
+
+            if columnas_faltan:
+                st.error(
+                    "No se encontraron las siguientes columnas necesarias en el archivo de viajes: "
+                    + ", ".join(columnas_faltan)
+                )
+            else:
+                df_trips_work = df_trips.copy()
+
+                # Normalizar valores clave
+                df_trips_work[col_customer] = df_trips_work[col_customer].astype(str)
+                df_trips_work[col_trip] = df_trips_work[col_trip].astype(str)
+
+                # Identificar viajes excluidos por operador
+                op_upper = df_trips_work[col_operador].astype(str).str.upper().str.strip()
+                mask_excl = op_upper.isin(OPERADORES_EXCLUIR)
+                df_trips_work["Excluido_por_operador"] = mask_excl
+
+                st.write(
+                    f"Viajes excluidos por operador logístico: {mask_excl.sum()} "
+                    f"de {len(df_trips_work)}."
+                )
+
+                # =======================
+                # CI NO OPERATIVOS a nivel viaje
+                # =======================
+                costo_x_milla = st.session_state["costo_no_op_x_milla"]
+                costo_x_viaje_sin = st.session_state["costo_no_op_x_viaje_sin"]
+
+                has_unit = df_trips_work[col_unit].notna() & (
+                    df_trips_work[col_unit].astype(str).str.strip() != ""
+                )
+                miles = pd.to_numeric(df_trips_work[col_miles], errors="coerce").fillna(0)
+
+                ci_no_op = np.zeros(len(df_trips_work))
+
+                # Solo asignar a viajes NO excluidos
+                idx_incluir = (~mask_excl).to_numpy()
+
+                # Con unidad -> por milla
+                if costo_x_milla is not None:
+                    idx_con_unidad = (has_unit & ~mask_excl).to_numpy()
+                    ci_no_op[idx_con_unidad] = costo_x_milla * miles.to_numpy()[idx_con_unidad]
+
+                # Sin unidad -> por viaje
+                if costo_x_viaje_sin is not None:
+                    idx_sin_unidad = (~has_unit & ~mask_excl).to_numpy()
+                    ci_no_op[idx_sin_unidad] = costo_x_viaje_sin
+
+                df_trips_work["CI_no_operativo"] = ci_no_op
+
+                # =======================
+                # CI LIGADOS A OPERACIÓN a nivel viaje
+                # =======================
+                asignaciones_df = st.session_state["asignaciones_df"].copy()
+                conceptos_tipos = st.session_state["conceptos_tipos"].copy()
+
+                # Totales por cliente y concepto
+                tot_client_conc = (
+                    asignaciones_df.groupby(["Customer", "Concepto"], as_index=False)[
+                        "Costo asignado"
+                    ]
+                    .sum()
+                )
+
+                tot_client_conc = tot_client_conc.merge(
+                    conceptos_tipos, on="Concepto", how="left"
+                )
+
+                # Crear columna de CI op en trips
+                df_trips_work["CI_op_ligado_operacion"] = 0.0
+
+                # Pre-calcular banderas por viaje
+                has_unit_trip = has_unit
+                trailer_str = df_trips_work[col_trailer].astype(str)
+                mask_trailer_lf = trailer_str.str.upper().str.startswith("LF")
+
+                for _, row in tot_client_conc.iterrows():
+                    cliente = str(row["Customer"])
+                    concepto = row["Concepto"]
+                    tipo_dist = row["Tipo distribución"]
+                    monto_cliente = float(row["Costo asignado"])
+
+                    # Filtrar viajes de este cliente (y no excluidos)
+                    mask_cliente = df_trips_work[col_customer].astype(str) == cliente
+                    mask_base = mask_cliente & (~mask_excl)
+
+                    if not mask_base.any():
+                        continue
+
+                    if tipo_dist == "Volumen Viajes":
+                        mask_aplica = mask_base
+                    elif tipo_dist == "Viajes con unidad":
+                        mask_aplica = mask_base & has_unit_trip
+                    elif tipo_dist == "Viajes con Remolque":
+                        mask_aplica = mask_base & mask_trailer_lf
+                    else:
+                        # Por si se agrega otro tipo
+                        mask_aplica = mask_base
+
+                    idx = df_trips_work.index[mask_aplica]
+                    n_traficos = len(idx)
+
+                    if n_traficos == 0:
+                        st.warning(
+                            f"Para el cliente '{cliente}' y concepto '{concepto}' "
+                            f"({tipo_dist}) no hay viajes que cumplan la condición. "
+                            "No se asigna ese costo a ningún viaje."
+                        )
+                        continue
+
+                    ci_por_viaje = monto_cliente / n_traficos
+                    df_trips_work.loc[idx, "CI_op_ligado_operacion"] += ci_por_viaje
+
+                # =======================
+                # Total CI por viaje y descarga
+                # =======================
+                df_trips_work["CI_total"] = (
+                    df_trips_work["CI_no_operativo"]
+                    + df_trips_work["CI_op_ligado_operacion"]
+                )
+
+                st.subheader("Vista previa con CI asignado")
+                st.dataframe(
+                    df_trips_work.head(),
+                    use_container_width=True,
+                )
+
+                def trips_to_excel_bytes(df):
+                    buffer = BytesIO()
+                    with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
+                        df.to_excel(
+                            writer,
+                            index=False,
+                            sheet_name="CI_por_viaje",
+                        )
+                    return buffer.getvalue()
+
+                st.download_button(
+                    "📥 Descargar viajes con CI asignado (Excel)",
+                    data=trips_to_excel_bytes(df_trips_work),
+                    file_name="viajes_con_CI_asignado.xlsx",
+                    mime=(
+                        "application/vnd.openxmlformats-"
+                        "officedocument.spreadsheetml.sheet"
+                    ),
+                )
+
+        except Exception as e:
+            st.error(f"Error procesando la base de viajes detallados: {e}")
