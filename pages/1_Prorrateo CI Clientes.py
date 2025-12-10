@@ -774,6 +774,7 @@ else:
                     "Operador logístico",
                     "OPERADOR LOGISTICO",
                     "Operador_Logistico",
+                    "Logistic Operator",
                 ],
             )
             col_unit = find_column(df_trips, ["Unit", "Unidad"])
