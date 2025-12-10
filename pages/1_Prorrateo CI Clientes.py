@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import json
 from io import BytesIO
 from supabase import create_client
@@ -17,8 +18,10 @@ st.markdown(
     """
 Esta app te ayuda a:
 1. Calcular porcentajes por tipo de cliente (viajes, remolques, unidades).
-2. Repartir costos **no ligados a la operación** entre viajes con/sin unidad y obtener el costo unitario.
-3. Prorratear costos **ligados indirectamente a la operación** entre clientes usando un catálogo de tipos de distribución.
+2. Repartir costos **no ligados a la operación** entre viajes con/sin unidad (y obtener costos unitarios).
+3. Definir un catálogo de distribución para costos **ligados a la operación**.
+4. Prorratear esos costos entre clientes.
+5. **Asignar los costos indirectos (CI) a nivel viaje**, excluyendo ciertos operadores logísticos.
 """
 )
 
@@ -57,6 +60,25 @@ def normaliza_tipo_distribucion(valor):
         return v or None
 
     return valor
+
+# ============================================================
+# Función auxiliar para encontrar columnas por candidatos
+# ============================================================
+
+def find_column(df, candidates):
+    """
+    Busca en df.columns una columna cuyo nombre "normalizado"
+    coincida con alguno de los candidatos.
+    Normalización: minúsculas, sin espacios ni guiones bajos.
+    """
+    norm_map = {
+        str(c).lower().replace(" ", "").replace("_", ""): c for c in df.columns
+    }
+    for cand in candidates:
+        key = cand.lower().replace(" ", "").replace("_", "")
+        if key in norm_map:
+            return norm_map[key]
+    return None
 
 # ============================================================
 # 1️⃣ CARGA DEL ARCHIVO BASE (TABLA + OPCIONAL DISTRIBUCIÓN)
@@ -306,7 +328,7 @@ else:
                     "(no hay viajes sin unidad en el mes)."
                 )
 
-            # Guardar en estado (sólo informativo por ahora)
+            # Guardar en estado
             st.session_state["costo_no_op_total"] = costo_total_no_op
             st.session_state["costo_no_op_x_milla"] = costo_x_milla
             st.session_state["costo_no_op_x_viaje_sin"] = costo_x_viaje_sin
@@ -593,6 +615,13 @@ else:
                 st.subheader("Totales por cliente (solo costos ligados a la operación)")
                 st.dataframe(pivot_clientes, use_container_width=True)
 
+                # Guardar para el paso 5
+                st.session_state["asignaciones_df"] = asignaciones_df
+                st.session_state["conceptos_tipos"] = df_op_mes[
+                    ["Concepto", "Tipo distribución"]
+                ]
+                st.session_state["pivot_clientes_ci"] = pivot_clientes
+
                 # Exportar resultados
                 def to_excel_bytes(df1, df2, df_unitarios=None):
                     buffer = BytesIO()
@@ -639,7 +668,7 @@ else:
                         df_unitarios = pd.DataFrame(filas_unit)
 
                 st.download_button(
-                    "📥 Descargar resultados (Excel)",
+                    "📥 Descargar resultados (Excel clientes)",
                     data=to_excel_bytes(asignaciones_df, pivot_clientes, df_unitarios),
                     file_name="prorrateo_costos_clientes.xlsx",
                     mime=(
@@ -647,6 +676,7 @@ else:
                         "officedocument.spreadsheetml.sheet"
                     ),
                 )
+
 # ============================================================
 # 5️⃣ ASIGNACIÓN DE CI A NIVEL VIAJE
 # ============================================================
