@@ -436,12 +436,12 @@ else:
             columns={"concepto": "Concepto", "tipo_distribucion": "Tipo distribución"}
         )
 
-    # 🔹 NUEVO: aplanar listas como ["Volumen Viajes"] -> "Volumen Viajes"
-    catalogo["Tipo distribución"] = catalogo["Tipo distribución"].apply(
-        lambda x: x[0] if isinstance(x, list) and len(x) > 0 else x
-    )
+        # 🔹 NUEVO: aplanar listas como ["Volumen Viajes"] -> "Volumen Viajes"
+        catalogo["Tipo distribución"] = catalogo["Tipo distribución"].apply(
+            lambda x: x[0] if isinstance(x, list) and len(x) > 0 else x
+        )
 
-
+        # Unir catálogo con los costos del mes
         df_op_mes = df_op_mes.merge(catalogo, on="Concepto", how="left")
 
         if df_op_mes["Tipo distribución"].isna().any():
@@ -507,7 +507,6 @@ else:
                         f"que no existe. Se omite el concepto {concepto}."
                     )
                     continue
-
 
                 df_driver = base_clientes[["Customer", "Tipo cliente", col_driver]].copy()
                 total_driver = df_driver[col_driver].sum()
