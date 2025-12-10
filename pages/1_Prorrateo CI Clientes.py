@@ -140,6 +140,11 @@ if tabla is not None:
         meses = sorted(tabla.loc[tabla["Año"] == anio_sel, "Mes"].dropna().unique())
         mes_sel = st.selectbox("Mes (número)", meses)
 
+    # Guardar en sesión para usar en otros pasos (por ejemplo, paso 5)
+    st.session_state["anio_sel"] = int(anio_sel)
+    st.session_state["mes_sel"] = int(mes_sel)
+
+
     df_mes = tabla[(tabla["Año"] == anio_sel) & (tabla["Mes"] == mes_sel)].copy()
 
     if df_mes.empty:
@@ -727,7 +732,36 @@ else:
             df_trips = pd.read_excel(xls_trips, sheet_name=hoja_trips)
             df_trips.columns = df_trips.columns.astype(str)
 
-            st.subheader("Vista previa viajes")
+            # --- Filtrar por año/mes usando columna de fecha ---
+            col_fecha = find_column(
+                df_trips,
+                ["Fecha", "FECHA", "Bill date", "Bill Date", "Date"]
+            )
+
+            if col_fecha is not None and "anio_sel" in st.session_state and "mes_sel" in st.session_state:
+                df_trips[col_fecha] = pd.to_datetime(df_trips[col_fecha], errors="coerce")
+                anio_sel = int(st.session_state["anio_sel"])
+                mes_sel = int(st.session_state["mes_sel"])
+
+                mask_mes = (
+                    (df_trips[col_fecha].dt.year == anio_sel)
+                    & (df_trips[col_fecha].dt.month == mes_sel)
+                )
+
+                df_trips_mes = df_trips[mask_mes].copy()
+                st.write(
+                    f"Se usarán {df_trips_mes.shape[0]} viajes del mes {mes_sel:02d}/{anio_sel} "
+                    f"de un total de {df_trips.shape[0]} viajes en el archivo."
+                )
+                df_trips = df_trips_mes
+
+            else:
+                st.warning(
+                    "No se encontró una columna de fecha o no está definido el año/mes. "
+                    "Se usarán todos los viajes del archivo."
+                )
+
+            st.subheader("Vista previa viajes (después de filtro por mes)")
             st.dataframe(df_trips.head(), use_container_width=True)
 
             # Buscar columnas clave
