@@ -353,6 +353,12 @@ if file_op:
                     "tipo_distribucion": "Tipo distribución",
                 }
             )
+
+            # 🔹 NUEVO: si viene como lista ["Volumen Viajes"], tomar solo el primer valor
+            catalogo_existente["Tipo distribución"] = catalogo_existente["Tipo distribución"].apply(
+                lambda x: x[0] if isinstance(x, list) and len(x) > 0 else x
+            )
+
             merged_cat = conceptos.merge(
                 catalogo_existente,
                 on="Concepto",
@@ -430,6 +436,12 @@ else:
             columns={"concepto": "Concepto", "tipo_distribucion": "Tipo distribución"}
         )
 
+    # 🔹 NUEVO: aplanar listas como ["Volumen Viajes"] -> "Volumen Viajes"
+    catalogo["Tipo distribución"] = catalogo["Tipo distribución"].apply(
+        lambda x: x[0] if isinstance(x, list) and len(x) > 0 else x
+    )
+
+
         df_op_mes = df_op_mes.merge(catalogo, on="Concepto", how="left")
 
         if df_op_mes["Tipo distribución"].isna().any():
@@ -484,6 +496,10 @@ else:
                 monto = float(row["Monto_mes"])
                 tipo_dist = row["Tipo distribución"]
 
+                # 🔹 Por si en df_op_mes todavía quedara alguna lista
+                if isinstance(tipo_dist, list) and len(tipo_dist) > 0:
+                    tipo_dist = tipo_dist[0]
+
                 col_driver = driver_map.get(tipo_dist)
                 if col_driver not in base_clientes.columns:
                     st.warning(
@@ -491,6 +507,7 @@ else:
                         f"que no existe. Se omite el concepto {concepto}."
                     )
                     continue
+
 
                 df_driver = base_clientes[["Customer", "Tipo cliente", col_driver]].copy()
                 total_driver = df_driver[col_driver].sum()
