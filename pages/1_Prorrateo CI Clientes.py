@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import json
 from io import BytesIO
 from supabase import create_client
 
@@ -20,6 +21,42 @@ Esta app te ayuda a:
 3. Prorratear costos **ligados indirectamente a la operación** entre clientes usando un catálogo de tipos de distribución.
 """
 )
+
+# ============================================================
+# Función auxiliar para normalizar tipo_distribucion
+# ============================================================
+
+def normaliza_tipo_distribucion(valor):
+    """
+    Convierte distintos formatos de almacenamiento a una cadena simple:
+    - list -> primer elemento
+    - '["Volumen Viajes"]' -> 'Volumen Viajes'
+    - '{Volumen Viajes}' -> 'Volumen Viajes'
+    """
+    if isinstance(valor, list):
+        return valor[0] if valor else None
+
+    if isinstance(valor, str):
+        v = valor.strip()
+        if not v:
+            return None
+
+        # Intentar como JSON
+        try:
+            parsed = json.loads(v)
+            if isinstance(parsed, list) and parsed:
+                return str(parsed[0])
+            if isinstance(parsed, str):
+                return parsed
+        except Exception:
+            pass
+
+        # Limpiar brackets o llaves y comillas
+        v = v.strip("[]{}").strip().strip('"\'')
+
+        return v or None
+
+    return valor
 
 # ============================================================
 # 1️⃣ CARGA DEL ARCHIVO BASE (TABLA + OPCIONAL DISTRIBUCIÓN)
@@ -127,10 +164,10 @@ if tabla is not None:
         # Millas totales del mes (si vienen de hoja Distribución)
         millas_mes = None
         if dist_df is not None:
-            # Se asume que la fila 'Millas' está en la col 'Mes'
             try:
-                fila_millas = dist_df.loc[dist_df["Mes"].astype(str).str.upper() == "MILLAS"]
-                # Mapear número de mes a nombre de columna
+                fila_millas = dist_df.loc[
+                    dist_df["Mes"].astype(str).str.upper() == "MILLAS"
+                ]
                 mapa_mes = {
                     1: "Ene",
                     2: "Feb",
@@ -173,10 +210,7 @@ if tabla is not None:
 
             for col in agg_cols:
                 total_col = por_tipo[col].sum()
-                if total_col:
-                    por_tipo[f"%{col}"] = por_tipo[col] / total_col
-                else:
-                    por_tipo[f"%{col}"] = 0.0
+                por_tipo[f"%{col}"] = por_tipo[col] / total_col if total_col else 0.0
 
             st.dataframe(por_tipo, use_container_width=True)
         else:
@@ -216,7 +250,6 @@ else:
             st.subheader("Vista previa costos no operativos")
             st.dataframe(df_no.head(), use_container_width=True)
 
-            # Seleccionar columna de mes
             columnas_mes = [
                 c
                 for c in df_no.columns
@@ -257,7 +290,7 @@ else:
                 bolsa_sin_unidad / total_sin_unidad if total_sin_unidad else None
             )
 
-            st.subheader("Costos unitarios derivados")
+            st.subheader("Costos unitarios derivados (informativos)")
             if costo_x_milla is not None:
                 st.write(f"**Costo por milla (viajes con unidad):** ${costo_x_milla:,.6f}")
             else:
@@ -273,7 +306,7 @@ else:
                     "(no hay viajes sin unidad en el mes)."
                 )
 
-            # Guardar en estado por si luego quieres usarlo para asignar por cliente
+            # Guardar en estado (sólo informativo por ahora)
             st.session_state["costo_no_op_total"] = costo_total_no_op
             st.session_state["costo_no_op_x_milla"] = costo_x_milla
             st.session_state["costo_no_op_x_viaje_sin"] = costo_x_viaje_sin
@@ -300,7 +333,6 @@ try:
 except Exception:
     catalogo_existente = pd.DataFrame()
 
-# Cargar archivo de costos operativos (para nuevos conceptos)
 file_op = st.file_uploader(
     "Sube el archivo de costos ligados a operación (Concepto + meses)",
     type=["xlsx"],
@@ -354,10 +386,9 @@ if file_op:
                 }
             )
 
-            # 🔹 NUEVO: si viene como lista ["Volumen Viajes"], tomar solo el primer valor
-            catalogo_existente["Tipo distribución"] = catalogo_existente["Tipo distribución"].apply(
-                lambda x: x[0] if isinstance(x, list) and len(x) > 0 else x
-            )
+            catalogo_existente["Tipo distribución"] = catalogo_existente[
+                "Tipo distribución"
+            ].apply(normaliza_tipo_distribucion)
 
             merged_cat = conceptos.merge(
                 catalogo_existente,
@@ -395,7 +426,7 @@ if file_op:
                         registros.append(
                             {
                                 "concepto": row["Concepto"],
-                                "tipo_distribucion": row["Tipo distribución"],
+                                "tipo_distribucion": str(row["Tipo distribución"]),
                             }
                         )
                 if registros:
@@ -417,6 +448,19 @@ if file_op:
 # ============================================================
 st.header("4️⃣ Prorrateo de costos ligados a operación por cliente")
 
+# Mostrar de nuevo los costos unitarios informativos del paso 2 (si existen)
+costo_x_milla_info = st.session_state.get("costo_no_op_x_milla")
+costo_x_viaje_sin_info = st.session_state.get("costo_no_op_x_viaje_sin")
+
+if (costo_x_milla_info is not None) or (costo_x_viaje_sin_info is not None):
+    st.subheader("Recordatorio costos unitarios no operativos (informativos)")
+    if costo_x_milla_info is not None:
+        st.write(f"**Costo por milla (viajes con unidad):** ${costo_x_milla_info:,.6f}")
+    if costo_x_viaje_sin_info is not None:
+        st.write(
+            f"**Costo por viaje sin unidad:** ${costo_x_viaje_sin_info:,.6f}"
+        )
+
 if (
     "df_mes_clientes" not in st.session_state
     or "df_costos_op_mes" not in st.session_state
@@ -436,9 +480,8 @@ else:
             columns={"concepto": "Concepto", "tipo_distribucion": "Tipo distribución"}
         )
 
-        # 🔹 NUEVO: aplanar listas como ["Volumen Viajes"] -> "Volumen Viajes"
         catalogo["Tipo distribución"] = catalogo["Tipo distribución"].apply(
-            lambda x: x[0] if isinstance(x, list) and len(x) > 0 else x
+            normaliza_tipo_distribucion
         )
 
         # Unir catálogo con los costos del mes
@@ -496,10 +539,6 @@ else:
                 monto = float(row["Monto_mes"])
                 tipo_dist = row["Tipo distribución"]
 
-                # 🔹 Por si en df_op_mes todavía quedara alguna lista
-                if isinstance(tipo_dist, list) and len(tipo_dist) > 0:
-                    tipo_dist = tipo_dist[0]
-
                 col_driver = driver_map.get(tipo_dist)
                 if col_driver not in base_clientes.columns:
                     st.warning(
@@ -555,7 +594,7 @@ else:
                 st.dataframe(pivot_clientes, use_container_width=True)
 
                 # Exportar resultados
-                def to_excel_bytes(df1, df2):
+                def to_excel_bytes(df1, df2, df_unitarios=None):
                     buffer = BytesIO()
                     with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
                         df1.to_excel(
@@ -568,11 +607,40 @@ else:
                             index=False,
                             sheet_name="Totales_por_cliente",
                         )
+                        if df_unitarios is not None:
+                            df_unitarios.to_excel(
+                                writer,
+                                index=False,
+                                sheet_name="Costos_no_operativos_unit",
+                            )
                     return buffer.getvalue()
+
+                # Armar hoja con costos unitarios no operativos (si existen)
+                df_unitarios = None
+                if (costo_x_milla_info is not None) or (
+                    costo_x_viaje_sin_info is not None
+                ):
+                    filas_unit = []
+                    if costo_x_milla_info is not None:
+                        filas_unit.append(
+                            {
+                                "Concepto": "Costo por milla (viajes con unidad)",
+                                "Valor": costo_x_milla_info,
+                            }
+                        )
+                    if costo_x_viaje_sin_info is not None:
+                        filas_unit.append(
+                            {
+                                "Concepto": "Costo por viaje sin unidad",
+                                "Valor": costo_x_viaje_sin_info,
+                            }
+                        )
+                    if filas_unit:
+                        df_unitarios = pd.DataFrame(filas_unit)
 
                 st.download_button(
                     "📥 Descargar resultados (Excel)",
-                    data=to_excel_bytes(asignaciones_df, pivot_clientes),
+                    data=to_excel_bytes(asignaciones_df, pivot_clientes, df_unitarios),
                     file_name="prorrateo_costos_clientes.xlsx",
                     mime=(
                         "application/vnd.openxmlformats-"
