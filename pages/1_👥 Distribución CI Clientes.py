@@ -189,6 +189,9 @@ if file_data:
             ).fillna(0.0)
             df_data["_millas_con_unidad"] = df_data["_millas"] * df_data["_flag_unidad"]
 
+            # Guardar copia de la DATA ya preparada para usarla en el Paso 5
+            st.session_state["df_data_original"] = df_data.copy()
+
             # ----------------------------------
             # 2) Filtro de operadores para drivers (como tu SQL)
             #    ESTA DATA SE USA PARA LA TABLA POR CLIENTE Y TIPO_CLIENTE
@@ -239,6 +242,7 @@ if file_data:
                 total_viajes_ci = df_data_mes["_trip"].nunique()
                 total_con_unidad_ci = int(df_data_mes["_flag_unidad"].sum())
                 total_sin_unidad_ci = total_viajes_ci - total_con_unidad_ci
+                total_con_remolque_ci = int(df_data_mes["_flag_trailer_lf"].sum())
                 millas_mes_ci = float(
                     df_data_mes.loc[df_data_mes["_flag_unidad"] == 1, "_millas"].sum()
                 )
@@ -254,12 +258,14 @@ if file_data:
                             "Viajes totales (base CI)",
                             "Viajes con unidad (base CI)",
                             "Viajes sin unidad (base CI)",
+                            "Viajes con remolque (base CI)",
                             "Millas con unidad (base CI)",
                         ],
                         "Valor": [
                             total_viajes_ci,
                             total_con_unidad_ci,
                             total_sin_unidad_ci,
+                            total_con_remolque_ci,
                             millas_mes_ci,
                         ],
                     }
@@ -420,9 +426,33 @@ else:
                 for c in df_no.columns
                 if c not in ["Concepto", "CONCEPTO"] and df_no[c].dtype != "O"
             ] or [c for c in df_no.columns if c not in ["Concepto", "CONCEPTO"]]
+
+            # Sugerir por default el mes elegido en el Paso 1 (si coincide el nombre)
+            mes_sel_global = st.session_state.get("mes_sel")
+            index_default = 0
+            if mes_sel_global is not None and len(columnas_mes) > 0:
+                mapa_meses = {
+                    1: "Ene",
+                    2: "Feb",
+                    3: "Mar",
+                    4: "Abr",
+                    5: "May",
+                    6: "Jun",
+                    7: "Jul",
+                    8: "Ago",
+                    9: "Sep",
+                    10: "Oct",
+                    11: "Nov",
+                    12: "Dic",
+                }
+                nombre_mes = mapa_meses.get(int(mes_sel_global))
+                if nombre_mes in columnas_mes:
+                    index_default = columnas_mes.index(nombre_mes)
+            
             col_mes_sel = st.selectbox(
                 "Selecciona la columna del mes (ej. 'Ene')",
                 columnas_mes,
+                index=index_default,
             )
 
             concepto_col = "Concepto" if "Concepto" in df_no.columns else "CONCEPTO"
@@ -524,9 +554,33 @@ if file_op:
             for c in df_op.columns
             if c not in ["Concepto", "CONCEPTO"] and df_op[c].dtype != "O"
         ] or [c for c in df_op.columns if c not in ["Concepto", "CONCEPTO"]]
+
+        # Sugerir por default el mes elegido en el Paso 1
+        mes_sel_global = st.session_state.get("mes_sel")
+        index_default_op = 0
+        if mes_sel_global is not None and len(columnas_mes_op) > 0:
+            mapa_meses = {
+                1: "Ene",
+                2: "Feb",
+                3: "Mar",
+                4: "Abr",
+                5: "May",
+                6: "Jun",
+                7: "Jul",
+                8: "Ago",
+                9: "Sep",
+                10: "Oct",
+                11: "Nov",
+                12: "Dic",
+            }
+            nombre_mes = mapa_meses.get(int(mes_sel_global))
+            if nombre_mes in columnas_mes_op:
+                index_default_op = columnas_mes_op.index(nombre_mes)
+
         col_mes_op = st.selectbox(
             "Selecciona la columna del mes a prorratear (ej. 'Ene')",
             columnas_mes_op,
+            index=index_default_op,
         )
 
         concepto_col_op = "Concepto" if "Concepto" in df_op.columns else "CONCEPTO"
@@ -826,21 +880,42 @@ if faltan_requisitos:
         + "\n- ".join(faltan_requisitos)
     )
 else:
-    file_trips = st.file_uploader(
-        "Sube la base de viajes a nivel detalle (ej. DATA LINCOLN 2025..xlsx)",
-        type=["xlsx"],
-        key="file_trips_ci",
+    # Elegir origen de la base de viajes
+    origen_trips = st.radio(
+        "¿Qué base quieres usar para asignar CI?",
+        ["Usar la misma DATA del paso 1", "Subir otro archivo"],
+        index=0,
     )
 
-    if file_trips:
-        try:
-            xls_trips = pd.ExcelFile(file_trips)
-            hoja_trips = st.selectbox(
-                "Hoja con los viajes detallados",
-                xls_trips.sheet_names,
+    df_trips = None
+    file_trips = None
+
+    if origen_trips == "Usar la misma DATA del paso 1":
+        if "df_data_original" not in st.session_state:
+            st.error(
+                "No se encontró la DATA del paso 1 en memoria. "
+                "Vuelve a cargarla en el Paso 1 o elige 'Subir otro archivo'."
             )
-            df_trips = pd.read_excel(xls_trips, sheet_name=hoja_trips)
-            df_trips.columns = df_trips.columns.astype(str)
+        else:
+            df_trips = st.session_state["df_data_original"].copy()
+    else:
+        file_trips = st.file_uploader(
+            "Sube la base de viajes a nivel detalle (ej. DATA LINCOLN 2025..xlsx)",
+            type=["xlsx"],
+            key="file_trips_ci",
+        )
+
+    if (df_trips is not None) or file_trips:
+        try:
+            # Si se eligió subir archivo, leemos el Excel aquí
+            if df_trips is None and file_trips is not None:
+                xls_trips = pd.ExcelFile(file_trips)
+                hoja_trips = st.selectbox(
+                    "Hoja con los viajes detallados",
+                    xls_trips.sheet_names,
+                )
+                df_trips = pd.read_excel(xls_trips, sheet_name=hoja_trips)
+                df_trips.columns = df_trips.columns.astype(str)
 
             # --- Filtrar por año/mes usando columna de fecha ---
             col_fecha = find_column(
@@ -865,14 +940,14 @@ else:
                 df_trips_mes = df_trips[mask_mes].copy()
                 st.write(
                     f"Se usarán {df_trips_mes.shape[0]} viajes del mes "
-                    f"{mes_sel:02d}/{anio_sel} de un total de {df_trips.shape[0]} viajes en el archivo."
+                    f"{mes_sel:02d}/{anio_sel} de un total de {df_trips.shape[0]} viajes en la base."
                 )
                 df_trips = df_trips_mes
 
             else:
                 st.warning(
                     "No se encontró una columna de fecha o no está definido el año/mes. "
-                    "Se usarán todos los viajes del archivo."
+                    "Se usarán todos los viajes de la base."
                 )
 
             st.subheader("Vista previa viajes (después de filtro por mes)")
@@ -906,9 +981,9 @@ else:
             if col_operador is None:
                 columnas_faltan.append("Operador logistico / Logistic Operator")
             if col_unit is None:
-                columnas_faltan.append("Unit")
+                columnas_faltan.append("Unit / Unidad")
             if col_trailer is None:
-                columnas_faltan.append("Trailer")
+                columnas_faltan.append("Trailer / Remolque")
             if col_miles is None:
                 columnas_faltan.append("Real Miles")
 
@@ -962,9 +1037,16 @@ else:
 
                 df_trips_work["CI_no_operativo"] = ci_no_op
 
+                st.subheader("Resumen de CI no operativo a nivel viaje")
+                st.write(
+                    df_trips_work["CI_no_operativo"].describe(percentiles=[0.25, 0.5, 0.75])
+                )
+
                 # =======================
                 # CI LIGADOS A OPERACIÓN a nivel viaje
                 # =======================
+                st.subheader("Asignación de CI ligados a la operación a nivel viaje")
+
                 asignaciones_df = st.session_state["asignaciones_df"].copy()
                 conceptos_tipos = st.session_state["conceptos_tipos"].copy()
 
@@ -980,7 +1062,6 @@ else:
                     conceptos_tipos, on="Concepto", how="left"
                 )
 
-                # Crear columna de CI op en trips
                 df_trips_work["CI_op_ligado_operacion"] = 0.0
 
                 # Pre-calcular banderas por viaje
@@ -1026,19 +1107,17 @@ else:
                     else:
                         mask_aplica = mask_base
 
-                    idx = df_trips_work.index[mask_aplica]
-                    n_traficos = len(idx)
-
+                    n_traficos = mask_aplica.sum()
                     if n_traficos == 0:
                         st.warning(
-                            f"Para el cliente '{cliente}' y concepto '{concepto}' "
-                            f"({tipo_dist}) no hay viajes que cumplan la condición. "
+                            f"Cliente '{cliente}' y concepto '{concepto}' "
+                            f"({tipo_dist}) no tiene viajes que cumplan la condición. "
                             "No se asigna ese costo a ningún viaje."
                         )
                         continue
 
                     ci_por_viaje = monto_cliente / n_traficos
-                    df_trips_work.loc[idx, "CI_op_ligado_operacion"] += ci_por_viaje
+                    df_trips_work.loc[mask_aplica, "CI_op_ligado_operacion"] += ci_por_viaje
 
                 # =======================
                 # Total CI por viaje y descarga
