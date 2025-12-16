@@ -3,17 +3,15 @@ from datetime import datetime, timezone
 
 import streamlit as st
 from supabase import create_client, Client
-import smtplib
-from email.message import EmailMessage
 
-# ====== SUPABASE CLIENT ======
+# =========================
+# SUPABASE CLIENT
+# =========================
 def get_supabase_client() -> Client:
-    # Primero intenta con st.secrets (recomendado en Streamlit)
     try:
         url = st.secrets["SUPABASE_URL"]
         key = st.secrets["SUPABASE_KEY"]
     except Exception:
-        # Fallback a variables de entorno
         url = os.getenv("SUPABASE_URL")
         key = os.getenv("SUPABASE_KEY")
 
@@ -24,195 +22,246 @@ def get_supabase_client() -> Client:
 
 supabase = get_supabase_client()
 
-# ====== CONFIG CORREO (puedes apagarlo con ENABLE_EMAIL) ======
-def _get_secret(name: str, default: str | None = None) -> str | None:
-    try:
-        return st.secrets[name]
-    except Exception:
-        return os.getenv(name, default)
-
-ENABLE_EMAIL = (_get_secret("ENABLE_EMAIL", "false") or "false").lower() == "true"
-SMTP_HOST = _get_secret("SMTP_HOST")
-SMTP_PORT = int(_get_secret("SMTP_PORT", "587"))
-SMTP_USER = _get_secret("SMTP_USER")   # cuenta genérica
-SMTP_PASSWORD = _get_secret("SMTP_PASSWORD")
-
-
 def folio_visible_from_id(row_id: int) -> str:
-    """Convierte el id numérico en un folio tipo #00001."""
     return f"#{row_id:05d}"
 
+# =========================
+# CATÁLOGOS (UI)
+# =========================
+EMPRESAS = ["Set Freight", "Lincoln", "Set Logis Plus", "Picus", "Igloo"]
+PLATAFORMAS = [
+    "Star USA (LINCOLB, SLP)",
+    "STAR 2.0 (SET FREIGHT, PALOS GARZA LOGISTICS, PALOS GARZA LOGISMEX)",
+]
+MONEDAS = ["MXN", "USD"]
 
-def enviar_correo_solicitud(data: dict, factura_pdf=None):
-    """Envía correo de notificación de nueva solicitud (si está habilitado)."""
-    if not ENABLE_EMAIL:
-        # Simplemente no envía, para que puedas probar sin correo
-        return False, "Envío de correo desactivado (ENABLE_EMAIL = false)."
+# Tipos vistos en tu modal (video)
+TIPOS_CONCEPTO = [
+    "OTROS",
+    "TIPO MOVIMIENTO",
+    "FLETE MX",
+    "AUTOPISTAS",
+    "PAD",
+    "FLETE USA",
+    "CRUCE",
+    "DOMESTICO MX",
+    "DOMESTICO USA",
+    "ALMACENAJE",
+    "MANIOBRAS",
+    "SUELDO CARGADO",
+    "CARGA",
+    "DESCARGA",
+    "TRASBORDO",
+    "BONO",
+    "SUELDO",
+    "GRUA",
+]
 
-    if not (SMTP_HOST and SMTP_PORT and SMTP_USER and SMTP_PASSWORD):
-        return False, "Configuración SMTP incompleta."
+# Fallback mínimo (si aún no tienes catálogo en Supabase).
+# Aquí puedes ir agregando más tipos/valores si lo necesitas.
+FALLBACK_CONCEPTOS = {
+    "OTROS": [
+        "EXTRA STOP/CT. PARADA EXTRA",
+        "HANDLING CHARGES/CT. MANIOBRAS",
+        "LAY OVER/CT. ESTANCIAS",
+        "LOADLOCKS/ CT.GATAS/BLOQUEOS",
+        "LOGISTICS COORDINATION/ CT. COORDINACION LOGISTICA",
+        "LUMPER FEES/ CT. DESCARGA",
+        "SALES EXPENSES 1/CT. GASTOS DE VENTA",
+        "SALES EXPENSES 2/CT. GASTOS DE VENTA",
+        "SALES EXPENSES 3/CT. GASTOS DE VENTA",
+        "SCALE / CT. BASCULA RB",
+        "STORAGE COSTS/CT. ALMACENAJES",
+        "TEAM DRIVER /CT. DOBLE OPERADOR",
+        "THERMO RENT/CT. RENTA DE THERMO",
+        "TIRES /CT.LLANTAS",
+        "TNU - TRUCK NOT USED/CT. MOVIMIENTO EN FALSO",
+        "TRAILER PARTS /CT. REFACCIONES",
+        "TRAILER REPAIR & OTHER EXPENSES/CT. REP. Y OTROS GASTOS DE VIAJE",
+        "TRANSLOAD/ CT. TRANSBORDO",
+    ],
+    "GRUA": [],  # en tu video aparece "Sin datos para mostrar"
+}
 
-    msg = EmailMessage()
+@st.cache_data(ttl=300)
+def load_conceptos_from_supabase() -> dict[str, list[str]]:
+    """
+    Intenta cargar el catálogo desde Supabase:
+    tabla sugerida: catalogo_conceptos(tipo_concepto, concepto, activo)
+    """
+    try:
+        res = (
+            supabase.table("catalogo_conceptos")
+            .select("tipo_concepto, concepto, activo")
+            .execute()
+        )
+        rows = res.data or []
+        if not rows:
+            return {}
 
-    asunto = f"Nueva solicitud complementaria {data.get('folio')} - {data.get('empresa')}"
-    msg["Subject"] = asunto
-    msg["From"] = SMTP_USER
-    msg["To"] = "auditoria.operaciones@palosgarza.com, abel.chontal@palosgarza.com"
+        conceptos: dict[str, list[str]] = {}
+        for r in rows:
+            if "activo" in r and r["activo"] is False:
+                continue
+            t = (r.get("tipo_concepto") or "").strip()
+            c = (r.get("concepto") or "").strip()
+            if not t or not c:
+                continue
+            conceptos.setdefault(t, []).append(c)
 
-    cuerpo = f"""
-Se ha registrado una nueva solicitud de complemento.
+        # Ordena conceptos para que se vean “limpios”
+        for t in conceptos:
+            conceptos[t] = sorted(set(conceptos[t]))
+        return conceptos
+    except Exception:
+        return {}
 
-Folio: {data.get('folio')}
-Empresa: {data.get('empresa')}
+CONCEPTOS_DB = load_conceptos_from_supabase()
 
-Número de tráfico: {data.get('numero_trafico')}
-Concepto correcto: {data.get('concepto_correcto')}
-Monto correcto: {data.get('monto_correcto')}
-Proveedor correcto: {data.get('proveedor_correcto')}
+def get_conceptos(tipo: str) -> list[str]:
+    # Prioridad: Supabase; si no hay, usa fallback
+    if tipo in CONCEPTOS_DB:
+        return CONCEPTOS_DB[tipo]
+    return FALLBACK_CONCEPTOS.get(tipo, [])
 
-Motivo de la modificación:
-{data.get('motivo_modificacion')}
+# =========================
+# UI
+# =========================
+st.header("Registro de complementaria (solo registro, sin correo)")
 
-Solicitante:
-{data.get('nombre_solicitante')} ({data.get('correo_solicitante')})
+# 1) Fecha automática (solo se muestra)
+st.text_input("Fecha", value=datetime.now().strftime("%d/%m/%Y"), disabled=True)
 
-Link hilo de correo:
-{data.get('link_hilo_correo') or 'N/A'}
+# 2) Empresa / Plataforma
+c1, c2 = st.columns(2)
+with c1:
+    empresa = st.selectbox("Empresa", EMPRESAS, index=None, placeholder="Selecciona una empresa")
+with c2:
+    plataforma = st.selectbox("Plataforma", PLATAFORMAS, index=None, placeholder="Selecciona una plataforma")
 
-Links de evidencias:
-{data.get('link_evidencias') or 'N/A'}
+# 3) Solicitante / Motivo / Tráfico
+solicitante = st.text_input("Solicitante")
+motivo_solicitud = st.text_area("Motivo de la solicitud")
+numero_trafico = st.text_input("Número de tráfico")
 
-PDF factura (Supabase):
-{data.get('factura_archivo') or 'N/A'}
+st.divider()
 
-Estatus inicial: {data.get('estatus')}
-Fecha de captura: {data.get('fecha_captura')}
-    """.strip()
+def bloque_concepto(prefix: str, titulo: str):
+    st.subheader(titulo)
 
-    msg.set_content(cuerpo)
+    col1, col2 = st.columns(2)
 
-    # Adjuntar PDF si viene
-    if factura_pdf is not None:
-        pdf_bytes = factura_pdf.getvalue()
-        msg.add_attachment(
-            pdf_bytes,
-            maintype="application",
-            subtype="pdf",
-            filename=factura_pdf.name
+    # Tipo Concepto
+    with col1:
+        tipo = st.selectbox(
+            "Tipo Concepto",
+            TIPOS_CONCEPTO,
+            key=f"{prefix}_tipo",
+            index=None,
+            placeholder="Selecciona un tipo",
         )
 
-    try:
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
-            server.starttls()
-            server.login(SMTP_USER, SMTP_PASSWORD)
-            server.send_message(msg)
-        return True, None
-    except Exception as e:
-        return False, str(e)
+    # Concepto dependiente
+    conceptos = get_conceptos(tipo) if tipo else []
+    concepto_disabled = (not tipo) or (len(conceptos) == 0)
 
+    with col2:
+        if concepto_disabled:
+            st.selectbox(
+                "Concepto",
+                ["Sin datos para mostrar"] if tipo else ["Selecciona primero un tipo"],
+                key=f"{prefix}_concepto",
+                disabled=True,
+            )
+        else:
+            st.selectbox(
+                "Concepto",
+                conceptos,
+                key=f"{prefix}_concepto",
+                index=None,
+                placeholder="Selecciona un concepto",
+            )
 
-# ===========================
-#  UI DE LA PÁGINA (FORM)
-# ===========================
-st.header("Solicitud de factura complementaria")
+    col3, col4 = st.columns(2)
+    with col3:
+        proveedor = st.text_input("Proveedor", key=f"{prefix}_proveedor")
+        moneda = st.selectbox("Moneda", MONEDAS, key=f"{prefix}_moneda", index=None, placeholder="Selecciona moneda")
+    with col4:
+        importe = st.number_input("Importe", min_value=0.0, step=0.01, format="%.2f", key=f"{prefix}_importe")
 
-with st.form("form_solicitud_complementaria"):
-    empresa = st.selectbox(
-        "Empresa",
-        ["Set Freight", "Lincoln", "Set Logis", "Picus", "Igloo"],
-        index=None,
-        placeholder="Selecciona una empresa"
-    )
+    return {
+        "tipo": tipo,
+        "concepto": st.session_state.get(f"{prefix}_concepto"),
+        "proveedor": proveedor,
+        "moneda": moneda,
+        "importe": float(importe),
+    }
 
-    numero_trafico = st.text_input("Número de tráfico")
-    factura_pdf = st.file_uploader(
-        "Factura archivo (PDF)",
-        type=["pdf"],
-        accept_multiple_files=False
-    )
+actual = bloque_concepto("actual", "Datos actuales (como están)")
+st.divider()
+nuevo = bloque_concepto("nuevo", "Datos correctos (como deben quedar)")
 
-    concepto_correcto = st.text_input("Concepto correcto")
-    monto_correcto = st.number_input("Monto correcto", min_value=0.0, step=0.01, format="%.2f")
-    proveedor_correcto = st.text_input("Proveedor correcto")
-    motivo_modificacion = st.text_area("Motivo de la modificación")
+st.divider()
+registrar = st.button("Registrar")
 
-    nombre_solicitante = st.text_input("Nombre del solicitante")
-    correo_solicitante = st.text_input("Correo del solicitante")
-
-    link_hilo_correo = st.text_input("Link del hilo de correo (Outlook / OWA)")
-    link_evidencias = st.text_area("Links de fotos / evidencias (opcional)")
-
-    evidencias_files = st.file_uploader(
-        "Subir fotos / evidencias (opcional)",
-        type=["jpg", "jpeg", "png"],
-        accept_multiple_files=True
-    )
-
-    submitted = st.form_submit_button("Enviar solicitud")
-
-if not submitted:
-    st.stop()   # Termina aquí si no han enviado el formulario
-
-# ===== Validaciones mínimas =====
-if not empresa:
-    st.error("Debes seleccionar una empresa.")
-    st.stop()
-if not numero_trafico:
-    st.error("El campo 'Número de tráfico' es obligatorio.")
-    st.stop()
-if factura_pdf is None:
-    st.error("Debes subir el PDF de la factura.")
-    st.stop()
-if not motivo_modificacion:
-    st.error("Por favor indica el motivo de la modificación.")
-    st.stop()
-if not nombre_solicitante or not correo_solicitante:
-    st.error("Nombre y correo del solicitante son obligatorios.")
+if not registrar:
     st.stop()
 
+# =========================
+# VALIDACIONES
+# =========================
+errores = []
+if not empresa: errores.append("Debes seleccionar una empresa.")
+if not plataforma: errores.append("Debes seleccionar una plataforma.")
+if not solicitante.strip(): errores.append("El campo 'Solicitante' es obligatorio.")
+if not motivo_solicitud.strip(): errores.append("El campo 'Motivo de la solicitud' es obligatorio.")
+if not numero_trafico.strip(): errores.append("El campo 'Número de tráfico' es obligatorio.")
+
+for label, block in [("actual", actual), ("correcto", nuevo)]:
+    if not block["tipo"]:
+        errores.append(f"Debes seleccionar 'Tipo Concepto' ({label}).")
+    # Concepto puede estar deshabilitado si no hay conceptos para ese tipo (como GRUA).
+    # Si quieres obligar a concepto SOLO cuando hay catálogo:
+    if block["tipo"] and len(get_conceptos(block["tipo"])) > 0 and (not block["concepto"] or "Sin datos" in str(block["concepto"])):
+        errores.append(f"Debes seleccionar 'Concepto' ({label}).")
+    if not block["proveedor"].strip():
+        errores.append(f"Debes capturar 'Proveedor' ({label}).")
+    if not block["moneda"]:
+        errores.append(f"Debes seleccionar 'Moneda' ({label}).")
+
+if errores:
+    for e in errores:
+        st.error(e)
+    st.stop()
+
+# =========================
+# INSERT EN BD
+# =========================
 fecha_captura = datetime.now(timezone.utc).isoformat()
-estatus_inicial = "Pendiente"
 
-# ===== 1) Subir PDF a Storage =====
-factura_url = None
-try:
-    bucket_pdf = supabase.storage.from_("complementarias")
-    pdf_path = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{factura_pdf.name}"
-    bucket_pdf.upload(pdf_path, factura_pdf.getvalue())
-    factura_url = bucket_pdf.get_public_url(pdf_path)
-except Exception as e:
-    st.warning(f"No se pudo subir el PDF a Storage: {e}")
-
-# ===== 2) Subir evidencias (imágenes) =====
-evidencias_urls = []
-if evidencias_files:
-    bucket_img = supabase.storage.from_("complementarias-evidencias")
-    for i, img in enumerate(evidencias_files, start=1):
-        try:
-            img_path = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_evidencia_{i}_{img.name}"
-            bucket_img.upload(img_path, img.getvalue())
-            url = bucket_img.get_public_url(img_path)
-            evidencias_urls.append(url)
-        except Exception as e:
-            st.warning(f"No se pudo subir la evidencia {img.name}: {e}")
-
-# ===== 3) Insertar registro en la tabla =====
 data_insert = {
     "folio": "PENDIENTE",
-    "empresa": empresa,
-    "numero_trafico": numero_trafico,
-    "factura_archivo": factura_url,
-    "concepto_correcto": concepto_correcto,
-    "monto_correcto": float(monto_correcto),
-    "proveedor_correcto": proveedor_correcto,
-    "motivo_modificacion": motivo_modificacion,
-    "nombre_solicitante": nombre_solicitante,
-    "correo_solicitante": correo_solicitante,
-    "link_hilo_correo": link_hilo_correo,
-    "link_evidencias": link_evidencias,
-    "evidencias_urls": evidencias_urls or None,
-    "estatus": estatus_inicial,
     "fecha_captura": fecha_captura,
+    "estatus": "Pendiente",
+
+    "empresa": empresa,
+    "plataforma": plataforma,
+    "solicitante": solicitante.strip(),
+    "motivo_solicitud": motivo_solicitud.strip(),
+    "numero_trafico": numero_trafico.strip(),
+
+    "tipo_concepto_actual": actual["tipo"],
+    "concepto_actual": None if "Sin datos" in str(actual["concepto"]) else actual["concepto"],
+    "proveedor_actual": actual["proveedor"].strip(),
+    "moneda_actual": actual["moneda"],
+    "importe_actual": float(actual["importe"]),
+
+    "tipo_concepto_nuevo": nuevo["tipo"],
+    "concepto_nuevo": None if "Sin datos" in str(nuevo["concepto"]) else nuevo["concepto"],
+    "proveedor_nuevo": nuevo["proveedor"].strip(),
+    "moneda_nuevo": nuevo["moneda"],
+    "importe_nuevo": float(nuevo["importe"]),
+
     "fecha_resuelto": None,
     "auditor": None,
 }
@@ -222,28 +271,15 @@ try:
     if not res.data:
         st.error("No se pudo insertar la solicitud en la base de datos.")
         st.stop()
-    row = res.data[0]
-    row_id = row["id"]
+    row_id = res.data[0]["id"]
 except Exception as e:
     st.error(f"Error al guardar en la base de datos: {e}")
     st.stop()
 
-# ===== 4) Actualizar folio con formato #00001 =====
 folio_def = folio_visible_from_id(row_id)
 try:
     supabase.table("solicitudes_complementarias").update({"folio": folio_def}).eq("id", row_id).execute()
 except Exception as e:
-    st.warning(f"La solicitud se guardó, pero no se pudo actualizar el folio: {e}")
+    st.warning(f"Se guardó, pero no se pudo actualizar el folio: {e}")
 
-data_insert["folio"] = folio_def
-
-# ===== 5) Enviar correo (opcional) =====
-ok_mail, mail_error = enviar_correo_solicitud(data_insert, factura_pdf=factura_pdf)
-
-if ok_mail:
-    st.success(f"Solicitud registrada correctamente. Folio: {folio_def}")
-else:
-    st.warning(
-        f"Solicitud registrada correctamente. Folio: {folio_def}\n"
-        f"Pero hubo un problema al enviar el correo: {mail_error}"
-    )
+st.success(f"Registro guardado correctamente. Folio: {folio_def}")
