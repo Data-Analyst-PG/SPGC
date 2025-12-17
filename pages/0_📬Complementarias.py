@@ -319,8 +319,18 @@ with tab_auditor:
     st.subheader("Solicitudes registradas")
 
     auditor_pwd = st.text_input("Contraseña auditor", type="password")
-    if auditor_pwd != st.secrets.get("AUDITOR_PASSWORD", ""):
-        st.info("Acceso solo para auditor.")
+
+    secret_pwd = st.secrets.get("AUDITOR_PASSWORD")
+    if not secret_pwd:
+        st.error("No existe AUDITOR_PASSWORD en secrets. Agrégala en Settings > Secrets.")
+        st.stop()
+
+    if auditor_pwd == "":
+        st.info("Ingresa la contraseña para ver las solicitudes.")
+        st.stop()
+
+    if auditor_pwd != secret_pwd:
+        st.error("Contraseña incorrecta.")
         st.stop()
 
     colf1, colf2, colf3 = st.columns(3)
