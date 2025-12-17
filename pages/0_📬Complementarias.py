@@ -20,6 +20,7 @@ def get_supabase_client() -> Client:
         st.stop()
     return create_client(url, key)
 
+
 supabase = get_supabase_client()
 
 # =========================
@@ -28,7 +29,6 @@ supabase = get_supabase_client()
 EMPRESAS = ["Set Freight", "Lincoln", "Set Logis Plus", "Picus", "Igloo"]
 MONEDAS = ["MXN", "USD"]
 
-# Tipos vistos en tu modal (video)
 TIPOS_CONCEPTO = [
     "OTROS",
     "TIPO MOVIMIENTO",
@@ -50,7 +50,6 @@ TIPOS_CONCEPTO = [
     "GRUA",
 ]
 
-# Reglas de plataforma por empresa (según tu mensaje)
 PLATAFORMAS_POR_EMPRESA = {
     "Lincoln": ["STAR USA"],
     "Set Freight": [
@@ -75,7 +74,6 @@ PLATAFORMAS_POR_EMPRESA = {
     ],
 }
 
-# Fallback mínimo (si aún no tienes catálogo en Supabase).
 FALLBACK_CONCEPTOS = {
     "OTROS": [
         "EXTRA STOP/CT. PARADA EXTRA",
@@ -102,10 +100,6 @@ FALLBACK_CONCEPTOS = {
 
 @st.cache_data(ttl=300)
 def load_conceptos_from_supabase() -> dict[str, list[str]]:
-    """
-    Catálogo desde Supabase:
-    tabla sugerida: catalogo_conceptos(tipo_concepto, concepto, activo)
-    """
     try:
         res = (
             supabase.table("catalogo_conceptos")
@@ -139,12 +133,14 @@ def get_conceptos(tipo: str) -> list[str]:
         return CONCEPTOS_DB[tipo]
     return FALLBACK_CONCEPTOS.get(tipo, [])
 
+
 # =========================
 # UI
 # =========================
 st.header("Registro de complementaria (solo registro)")
 
 tab_captura, tab_auditor = st.tabs(["📝 Captura", "🕵️ Auditor"])
+
 
 def bloque_concepto(prefix: str, titulo: str):
     st.subheader(titulo)
@@ -194,11 +190,13 @@ def bloque_concepto(prefix: str, titulo: str):
         "importe": float(importe),
     }
 
+
+# =========================
+# TAB CAPTURA
+# =========================
 with tab_captura:
-    # 1) Fecha automática (solo se muestra)
     st.text_input("Fecha", value=datetime.now().strftime("%d/%m/%Y"), disabled=True)
 
-    # 2) Empresa / Plataforma dependiente
     c1, c2 = st.columns(2)
     with c1:
         empresa = st.selectbox("Empresa", EMPRESAS, index=None, placeholder="Selecciona una empresa")
@@ -213,26 +211,20 @@ with tab_captura:
             disabled=(empresa is None),
         )
 
-    # 3) Solicitante / Motivo / Tráfico
     solicitante = st.text_input("Solicitante")
     motivo_solicitud = st.text_area("Motivo de la solicitud")
     numero_trafico = st.text_input("Número de tráfico")
 
     st.divider()
-
     actual = bloque_concepto("actual", "Datos actuales (como están)")
     st.divider()
     nuevo = bloque_concepto("nuevo", "Datos correctos (como deben quedar)")
 
     st.divider()
     registrar = st.button("Registrar", type="primary")
-
     if not registrar:
         st.stop()
 
-    # =========================
-    # VALIDACIONES
-    # =========================
     errores = []
     if not empresa: errores.append("Debes seleccionar una empresa.")
     if not plataforma: errores.append("Debes seleccionar una plataforma.")
@@ -243,7 +235,6 @@ with tab_captura:
     for label, block in [("actual", actual), ("correcto", nuevo)]:
         if not block["tipo"]:
             errores.append(f"Debes seleccionar 'Tipo Concepto' ({label}).")
-        # Obliga concepto solo si hay catálogo disponible para ese tipo
         if block["tipo"] and len(get_conceptos(block["tipo"])) > 0 and (not block["concepto"] or "Sin datos" in str(block["concepto"])):
             errores.append(f"Debes seleccionar 'Concepto' ({label}).")
         if not block["proveedor"].strip():
@@ -256,9 +247,6 @@ with tab_captura:
             st.error(e)
         st.stop()
 
-    # =========================
-    # INSERT EN BD (folio numérico automático)
-    # =========================
     fecha_captura = datetime.now(timezone.utc).isoformat()
 
     data_insert = {
@@ -289,32 +277,32 @@ with tab_captura:
 
     try:
         res = supabase.table("solicitudes_complementarias").insert(data_insert).execute()
-
         if not res.data:
             st.error("No se pudo insertar la solicitud en la base de datos.")
             st.stop()
 
-        # ✅ folio ya viene generado automáticamente por la BD
+        # ✅ folio identity (NO id)
         folio_num = int(res.data[0]["folio"])
 
     except Exception as e:
         st.error(f"Error al guardar en la base de datos: {e}")
         st.stop()
 
-    # Mensaje para copiar/pegar
     folio_formateado = f"{folio_num:04d}"
 
     st.success(
         "Tú solicitud se ha capturado correctamente, favor de enviar el siguiente texto "
         "al correo auditoria.operaciones@palosgarza.com"
     )
-
     st.code(
         f"Mi folio de complementaria es el '#{folio_formateado}', favor de atender mi solicitud",
-        language="text"
+        language="text",
     )
 
 
+# =========================
+# TAB AUDITOR
+# =========================
 with tab_auditor:
     st.subheader("Solicitudes registradas")
 
@@ -333,16 +321,18 @@ with tab_auditor:
         st.error("Contraseña incorrecta.")
         st.stop()
 
+    ESTATUS_OPCIONES = ["Pendiente", "En revisión", "Cancelado", "Resuelto"]
+
     colf1, colf2, colf3 = st.columns(3)
     with colf1:
         f_empresa = st.selectbox("Empresa", ["(Todas)"] + EMPRESAS, index=0)
     with colf2:
-        f_estatus = st.selectbox("Estatus", ["(Todos)", "Pendiente", "En revisión", "Resuelto"], index=0)
+        f_estatus = st.selectbox("Estatus", ["(Todos)"] + ESTATUS_OPCIONES, index=0)
     with colf3:
         texto = st.text_input("Buscar (folio / solicitante / tráfico)")
 
     q = supabase.table("solicitudes_complementarias").select(
-        "id, folio, fecha_captura, estatus, empresa, plataforma, solicitante, numero_trafico, motivo_solicitud"
+        "folio, fecha_captura, estatus, empresa, plataforma, solicitante, numero_trafico, motivo_solicitud, fecha_resuelto"
     )
 
     if f_empresa != "(Todas)":
@@ -350,7 +340,7 @@ with tab_auditor:
     if f_estatus != "(Todos)":
         q = q.eq("estatus", f_estatus)
 
-    q = q.order("id", desc=True).limit(500)
+    q = q.order("folio", desc=True).limit(500)
 
     try:
         res = q.execute()
@@ -363,7 +353,7 @@ with tab_auditor:
         t = texto.strip().lower()
         def match(r):
             return (
-                t in str(r.get("folio", "")).lower()
+                t in f"{int(r.get('folio', 0)):04d}".lower()
                 or t in str(r.get("solicitante", "")).lower()
                 or t in str(r.get("numero_trafico", "")).lower()
             )
@@ -372,10 +362,44 @@ with tab_auditor:
     st.write(f"Total: {len(rows)}")
 
     for r in rows:
-        fol = r.get("folio") or r.get("id")
-        with st.expander(f"Folio #{fol} | {r.get('empresa')} | {r.get('estatus')}"):
+        folio_num = int(r["folio"])
+        folio_fmt = f"{folio_num:04d}"
+        estatus_actual = r.get("estatus") or "Pendiente"
+
+        with st.expander(f"Folio #{folio_fmt} | {r.get('empresa')} | {estatus_actual}"):
             st.write(f"**Fecha:** {r.get('fecha_captura')}")
             st.write(f"**Plataforma:** {r.get('plataforma')}")
             st.write(f"**Solicitante:** {r.get('solicitante')}")
             st.write(f"**Tráfico:** {r.get('numero_trafico')}")
             st.write(f"**Motivo:** {r.get('motivo_solicitud')}")
+            if r.get("fecha_resuelto"):
+                st.write(f"**Fecha resuelto/cancelado:** {r.get('fecha_resuelto')}")
+
+            st.divider()
+            c1, c2 = st.columns([2, 1])
+
+            with c1:
+                nuevo_estatus = st.selectbox(
+                    "Cambiar estatus",
+                    ESTATUS_OPCIONES,
+                    index=ESTATUS_OPCIONES.index(estatus_actual) if estatus_actual in ESTATUS_OPCIONES else 0,
+                    key=f"estatus_{folio_num}",
+                )
+
+            with c2:
+                if st.button("Guardar estatus", key=f"btn_guardar_{folio_num}"):
+                    update_payload = {"estatus": nuevo_estatus}
+
+                    # Si se resuelve o cancela, guardamos fecha_resuelto
+                    if nuevo_estatus in ["Resuelto", "Cancelado"]:
+                        update_payload["fecha_resuelto"] = datetime.now(timezone.utc).isoformat()
+                    else:
+                        update_payload["fecha_resuelto"] = None
+
+                    try:
+                        # ✅ Actualiza por folio (NO por id)
+                        supabase.table("solicitudes_complementarias").update(update_payload).eq("folio", folio_num).execute()
+                        st.success(f"Estatus actualizado para folio #{folio_fmt}")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"No se pudo actualizar el estatus: {e}")
