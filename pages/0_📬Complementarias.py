@@ -289,22 +289,17 @@ with tab_captura:
 
     try:
         res = supabase.table("solicitudes_complementarias").insert(data_insert).execute()
-        folio_num = int(res.data[0]["folio"])
+
         if not res.data:
             st.error("No se pudo insertar la solicitud en la base de datos.")
             st.stop()
-        row_id = int(res.data[0]["id"])
+
+        # ✅ folio ya viene generado automáticamente por la BD
+        folio_num = int(res.data[0]["folio"])
+
     except Exception as e:
         st.error(f"Error al guardar en la base de datos: {e}")
         st.stop()
-
-    # folio numérico = id
-    folio_num = row_id
-
-    try:
-        supabase.table("solicitudes_complementarias").update({"folio": folio_num}).eq("id", row_id).execute()
-    except Exception as e:
-        st.warning(f"Se guardó, pero no se pudo actualizar el folio: {e}")
 
     # Mensaje para copiar/pegar
     folio_formateado = f"{folio_num:04d}"
@@ -318,6 +313,7 @@ with tab_captura:
         f"Mi folio de complementaria es el '#{folio_formateado}', favor de atender mi solicitud",
         language="text"
     )
+
 
 with tab_auditor:
     st.subheader("Solicitudes registradas")
