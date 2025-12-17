@@ -262,8 +262,6 @@ with tab_captura:
     fecha_captura = datetime.now(timezone.utc).isoformat()
 
     data_insert = {
-        # folio se asigna después con el id
-        "folio": None,
         "fecha_captura": fecha_captura,
         "estatus": "Pendiente",
 
@@ -291,6 +289,7 @@ with tab_captura:
 
     try:
         res = supabase.table("solicitudes_complementarias").insert(data_insert).execute()
+        folio_num = int(res.data[0]["folio"])
         if not res.data:
             st.error("No se pudo insertar la solicitud en la base de datos.")
             st.stop()
@@ -308,8 +307,17 @@ with tab_captura:
         st.warning(f"Se guardó, pero no se pudo actualizar el folio: {e}")
 
     # Mensaje para copiar/pegar
-    st.success("Tú solicitud se a capturado correctamente favor de enviar el siguiente texto al correo auditoria.operaciones@palosgarza.com")
-    st.code(f"Mi folio de complementaria en el '#{folio_num}' favor de entender mi solicitud", language="text")
+    folio_formateado = f"{folio_num:04d}"
+
+    st.success(
+        "Tú solicitud se ha capturado correctamente, favor de enviar el siguiente texto "
+        "al correo auditoria.operaciones@palosgarza.com"
+    )
+
+    st.code(
+        f"Mi folio de complementaria es el '#{folio_formateado}', favor de atender mi solicitud",
+        language="text"
+    )
 
 with tab_auditor:
     st.subheader("Solicitudes registradas")
