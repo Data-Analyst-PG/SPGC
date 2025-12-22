@@ -885,6 +885,7 @@ else:
         "¿Qué base quieres usar para asignar CI?",
         ["Usar la misma DATA del paso 1", "Subir otro archivo"],
         index=0,
+        key="origen_trips_radio",
     )
 
     df_trips = None
@@ -913,11 +914,12 @@ else:
                 hoja_trips = st.selectbox(
                     "Hoja con los viajes detallados",
                     xls_trips.sheet_names,
+                    key="hoja_trips_sel",
                 )
                 df_trips = pd.read_excel(xls_trips, sheet_name=hoja_trips)
                 df_trips.columns = df_trips.columns.astype(str)
 
-            # --- Filtrar por año/mes usando columna de fecha ---
+            # --- Filtrar por año/mes usando columna de fecha (si existe) ---
             col_fecha = find_column(
                 df_trips,
                 ["Fecha", "FECHA", "Bill date", "Bill Date", "Date"],
@@ -943,7 +945,6 @@ else:
                     f"{mes_sel:02d}/{anio_sel} de un total de {df_trips.shape[0]} viajes en la base."
                 )
                 df_trips = df_trips_mes
-
             else:
                 st.warning(
                     "No se encontró una columna de fecha o no está definido el año/mes. "
@@ -1019,16 +1020,14 @@ else:
                 has_unit = df_trips_work[col_unit].notna() & (
                     df_trips_work[col_unit].astype(str).str.strip() != ""
                 )
-                miles = pd.to_numeric(df_trips_work[col_miles], errors="coerce").fillna(0)
+                miles = pd.to_numeric(df_trips_work[col_miles], errors="coerce").fillna(0.0)
 
-                ci_no_op = np.zeros(len(df_trips_work))
+                ci_no_op = np.zeros(len(df_trips_work), dtype=float)
 
                 # Con unidad -> por milla (incluye operadores "excluidos")
                 if costo_x_milla is not None:
                     idx_con_unidad = (has_unit & (miles > 0)).to_numpy()
-                    ci_no_op[idx_con_unidad] = (
-                        costo_x_milla * miles.to_numpy()[idx_con_unidad]
-                    )
+                    ci_no_op[idx_con_unidad] = costo_x_milla * miles.to_numpy()[idx_con_unidad]
 
                 # Sin unidad -> por viaje (para todos los que NO tienen unidad)
                 if costo_x_viaje_sin is not None:
@@ -1050,33 +1049,39 @@ else:
                 asignaciones_df = st.session_state["asignaciones_df"].copy()
                 conceptos_tipos = st.session_state["conceptos_tipos"].copy()
 
-                # Totales por cliente y concepto
+                # Totales por cliente y concepto (monto total de CI operativo por cliente y concepto)
                 tot_client_conc = (
-                    asignaciones_df.groupby(["Customer", "Concepto"], as_index=False)[
-                        "Costo asignado"
-                    ]
+                    asignaciones_df.groupby(["Customer", "Concepto"], as_index=False)["Costo asignado"]
                     .sum()
                 )
 
+                # Agregar el tipo de distribución por concepto (del catálogo)
                 tot_client_conc = tot_client_conc.merge(
                     conceptos_tipos, on="Concepto", how="left"
                 )
+
+                # === Selector: clientes que facturan por milla (override) ===
                 st.markdown("### ⚙️ Ajuste: clientes que facturan por milla")
 
                 clientes_disponibles = (
-                    tot_client_conc["Customer"].dropna().astype(str).sort_values().unique().tolist()
+                    tot_client_conc["Customer"]
+                    .dropna()
+                    .astype(str)
+                    .sort_values()
+                    .unique()
+                    .tolist()
                 )
 
                 clientes_por_milla = st.multiselect(
                     "Selecciona clientes para los que TODO el CI operativo se asigne por millas (aunque el catálogo diga Volumen/Viajes/Remolque):",
                     clientes_disponibles,
                     default=[],
-                    help="Útil cuando el ingreso real del cliente depende de millas. Evita CI plano por viaje."
+                    help="Útil cuando el ingreso real del cliente depende de millas. Evita CI plano por viaje.",
+                    key="clientes_por_milla_ms",
                 )
-
                 clientes_por_milla_set = set(clientes_por_milla)
 
-
+                # Inicializar columna CI operativo por viaje
                 df_trips_work["CI_op_ligado_operacion"] = 0.0
 
                 # Pre-calcular banderas por viaje
@@ -1084,79 +1089,70 @@ else:
                 trailer_str = df_trips_work[col_trailer].astype(str)
                 mask_trailer_lf = trailer_str.str.upper().str.startswith("LF")
 
+                # Loop: asignar por cliente-concepto
                 for _, row in tot_client_conc.iterrows():
                     cliente = str(row["Customer"])
                     concepto = row["Concepto"]
                     tipo_dist = row["Tipo distribución"]
                     monto_cliente = float(row["Costo asignado"])
 
-                    # Filtrar viajes de este cliente (SIN excluir operadores)
                     mask_cliente = df_trips_work[col_customer].astype(str) == cliente
                     mask_base = mask_cliente
 
                     if not mask_base.any():
                         continue
 
-                    # ✅ OVERRIDE: si el cliente factura por milla, forzamos Millas
+                    # ✅ Override: si el cliente factura por milla -> forzamos Millas
                     if cliente in clientes_por_milla_set:
                         tipo_dist = "Millas"
 
-                    # Reglas por tipo
+                    # ---------- Reglas por tipo ----------
                     if tipo_dist == "Volumen Viajes":
                         mask_aplica = mask_base
-
-                        n_traficos = mask_aplica.sum()
+                        n_traficos = int(mask_aplica.sum())
                         if n_traficos == 0:
                             continue
-                        ci_por_viaje = monto_cliente / n_traficos
-                        df_trips_work.loc[mask_aplica, "CI_op_ligado_operacion"] += ci_por_viaje
+                        df_trips_work.loc[mask_aplica, "CI_op_ligado_operacion"] += (monto_cliente / n_traficos)
                         continue
 
-                    elif tipo_dist == "Viajes con unidad":
+                    if tipo_dist == "Viajes con unidad":
                         mask_aplica = mask_base & has_unit_trip
-
-                        n_traficos = mask_aplica.sum()
+                        n_traficos = int(mask_aplica.sum())
                         if n_traficos == 0:
                             st.warning(
                                 f"Cliente '{cliente}' y concepto '{concepto}' (Viajes con unidad) "
                                 "no tiene viajes con unidad. No se asigna."
                             )
                             continue
-                        ci_por_viaje = monto_cliente / n_traficos
-                        df_trips_work.loc[mask_aplica, "CI_op_ligado_operacion"] += ci_por_viaje
+                        df_trips_work.loc[mask_aplica, "CI_op_ligado_operacion"] += (monto_cliente / n_traficos)
                         continue
 
-                    elif tipo_dist == "Viajes con Remolque":
+                    if tipo_dist == "Viajes con Remolque":
                         mask_aplica = mask_base & mask_trailer_lf
-
-                        n_traficos = mask_aplica.sum()
+                        n_traficos = int(mask_aplica.sum())
                         if n_traficos == 0:
                             st.warning(
                                 f"Cliente '{cliente}' y concepto '{concepto}' (Viajes con Remolque) "
                                 "no tiene viajes con remolque LF. No se asigna."
                             )
                             continue
-                        ci_por_viaje = monto_cliente / n_traficos
-                        df_trips_work.loc[mask_aplica, "CI_op_ligado_operacion"] += ci_por_viaje
+                        df_trips_work.loc[mask_aplica, "CI_op_ligado_operacion"] += (monto_cliente / n_traficos)
                         continue
 
-                    elif tipo_dist == "Millas":
-                        # ✅ Repartir proporcional a millas válidas (con unidad y millas > 0)
+                    if tipo_dist == "Millas":
+                        # ✅ Proporcional a millas válidas (unidad y millas > 0)
                         mask_millas_validas = mask_base & has_unit_trip & (miles > 0)
-
-                        total_miles_cliente = miles.where(mask_millas_validas, 0).sum()
+                        total_miles_cliente = float(miles.where(mask_millas_validas, 0).sum())
 
                         if total_miles_cliente <= 0:
                             st.warning(
                                 f"Cliente '{cliente}' y concepto '{concepto}' (Millas) "
-                                "no tienen millas válidas (unidad y millas > 0). "
+                                "no tiene millas válidas (unidad y millas > 0). "
                                 "Se reparte por viaje como fallback."
                             )
-                            n_traficos = mask_base.sum()
+                            n_traficos = int(mask_base.sum())
                             if n_traficos > 0:
-                                df_trips_work.loc[mask_base, "CI_op_ligado_operacion"] += (
-                                    monto_cliente / n_traficos
-                                )
+                                df_trips_work.loc[mask_base, "CI_op_ligado_operacion"] += (monto_cliente / n_traficos)
                             continue
 
                         propor = miles.where(mask_millas_validas, 0) / total_miles_cliente
@@ -1165,49 +1161,35 @@ else:
                         )
                         continue
 
-                    else:
-                        # Fallback: por viaje
-                        mask_aplica = mask_base
-                        n_traficos = mask_aplica.sum()
-                        if n_traficos == 0:
-                            continue
-                       ci_por_viaje = monto_cliente / n_traficos
-                        df_trips_work.loc[mask_aplica, "CI_op_ligado_operacion"] += ci_por_viaje
+                    # Fallback: por viaje (si llega un tipo raro)
+                    mask_aplica = mask_base
+                    n_traficos = int(mask_aplica.sum())
+                    if n_traficos == 0:
                         continue
-
+                    df_trips_work.loc[mask_aplica, "CI_op_ligado_operacion"] += (monto_cliente / n_traficos)
 
                 # =======================
                 # Total CI por viaje y descarga
                 # =======================
                 df_trips_work["CI_total"] = (
-                    df_trips_work["CI_no_operativo"]
-                    + df_trips_work["CI_op_ligado_operacion"]
+                    df_trips_work["CI_no_operativo"] + df_trips_work["CI_op_ligado_operacion"]
                 )
 
                 st.subheader("Vista previa con CI asignado")
-                st.dataframe(
-                    df_trips_work.head(),
-                    use_container_width=True,
-                )
+                st.dataframe(df_trips_work.head(), use_container_width=True)
 
+                # Descarga a Excel
                 def trips_to_excel_bytes(df):
                     buffer = BytesIO()
                     with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
-                        df.to_excel(
-                            writer,
-                            index=False,
-                            sheet_name="CI_por_viaje",
-                        )
+                        df.to_excel(writer, index=False, sheet_name="CI_por_viaje")
                     return buffer.getvalue()
 
                 st.download_button(
                     "📥 Descargar viajes con CI asignado (Excel)",
                     data=trips_to_excel_bytes(df_trips_work),
                     file_name="viajes_con_CI_asignado.xlsx",
-                    mime=(
-                        "application/vnd.openxmlformats-"
-                        "officedocument.spreadsheetml.sheet"
-                    ),
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 )
 
         except Exception as e:
