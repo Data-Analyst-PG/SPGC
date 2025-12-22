@@ -1061,6 +1061,21 @@ else:
                 tot_client_conc = tot_client_conc.merge(
                     conceptos_tipos, on="Concepto", how="left"
                 )
+                st.markdown("### ⚙️ Ajuste: clientes que facturan por milla")
+
+                clientes_disponibles = (
+                    tot_client_conc["Customer"].dropna().astype(str).sort_values().unique().tolist()
+                )
+
+                clientes_por_milla = st.multiselect(
+                    "Selecciona clientes para los que TODO el CI operativo se asigne por millas (aunque el catálogo diga Volumen/Viajes/Remolque):",
+                    clientes_disponibles,
+                    default=[],
+                    help="Útil cuando el ingreso real del cliente depende de millas. Evita CI plano por viaje."
+                )
+
+                clientes_por_milla_set = set(clientes_por_milla)
+
 
                 df_trips_work["CI_op_ligado_operacion"] = 0.0
 
@@ -1077,47 +1092,89 @@ else:
 
                     # Filtrar viajes de este cliente (SIN excluir operadores)
                     mask_cliente = df_trips_work[col_customer].astype(str) == cliente
-                    mask_base = mask_cliente  # <--- ya no usamos ~mask_excl
+                    mask_base = mask_cliente
 
                     if not mask_base.any():
                         continue
 
+                    # ✅ OVERRIDE: si el cliente factura por milla, forzamos Millas
+                    if cliente in clientes_por_milla_set:
+                        tipo_dist = "Millas"
+
+                    # Reglas por tipo
                     if tipo_dist == "Volumen Viajes":
                         mask_aplica = mask_base
+
+                        n_traficos = mask_aplica.sum()
+                        if n_traficos == 0:
+                            continue
+                        ci_por_viaje = monto_cliente / n_traficos
+                        df_trips_work.loc[mask_aplica, "CI_op_ligado_operacion"] += ci_por_viaje
+                        continue
+
                     elif tipo_dist == "Viajes con unidad":
                         mask_aplica = mask_base & has_unit_trip
+
+                        n_traficos = mask_aplica.sum()
+                        if n_traficos == 0:
+                            st.warning(
+                                f"Cliente '{cliente}' y concepto '{concepto}' (Viajes con unidad) "
+                                "no tiene viajes con unidad. No se asigna."
+                            )
+                            continue
+                        ci_por_viaje = monto_cliente / n_traficos
+                        df_trips_work.loc[mask_aplica, "CI_op_ligado_operacion"] += ci_por_viaje
+                        continue
+
                     elif tipo_dist == "Viajes con Remolque":
                         mask_aplica = mask_base & mask_trailer_lf
+
+                        n_traficos = mask_aplica.sum()
+                        if n_traficos == 0:
+                            st.warning(
+                                f"Cliente '{cliente}' y concepto '{concepto}' (Viajes con Remolque) "
+                                "no tiene viajes con remolque LF. No se asigna."
+                            )
+                            continue
+                        ci_por_viaje = monto_cliente / n_traficos
+                        df_trips_work.loc[mask_aplica, "CI_op_ligado_operacion"] += ci_por_viaje
+                        continue
+
                     elif tipo_dist == "Millas":
-                        # distribuir proporcional a millas dentro del cliente
-                        miles_cliente = miles.where(mask_base, 0)
-                        total_miles_cliente = miles_cliente.sum()
+                        # ✅ Repartir proporcional a millas válidas (con unidad y millas > 0)
+                        mask_millas_validas = mask_base & has_unit_trip & (miles > 0)
+
+                        total_miles_cliente = miles.where(mask_millas_validas, 0).sum()
+
                         if total_miles_cliente <= 0:
                             st.warning(
                                 f"Cliente '{cliente}' y concepto '{concepto}' (Millas) "
-                                "no tienen millas registradas. Se omite."
+                                "no tienen millas válidas (unidad y millas > 0). "
+                                "Se reparte por viaje como fallback."
                             )
+                            n_traficos = mask_base.sum()
+                            if n_traficos > 0:
+                                df_trips_work.loc[mask_base, "CI_op_ligado_operacion"] += (
+                                    monto_cliente / n_traficos
+                                )
                             continue
-                        # asignar proporcional a millas
-                        propor = miles_cliente / total_miles_cliente
-                        df_trips_work.loc[mask_base, "CI_op_ligado_operacion"] += (
-                            propor[mask_base] * monto_cliente
+
+                        propor = miles.where(mask_millas_validas, 0) / total_miles_cliente
+                        df_trips_work.loc[mask_millas_validas, "CI_op_ligado_operacion"] += (
+                            propor[mask_millas_validas] * monto_cliente
                         )
                         continue
+
                     else:
+                        # Fallback: por viaje
                         mask_aplica = mask_base
-
-                    n_traficos = mask_aplica.sum()
-                    if n_traficos == 0:
-                        st.warning(
-                            f"Cliente '{cliente}' y concepto '{concepto}' "
-                            f"({tipo_dist}) no tiene viajes que cumplan la condición. "
-                            "No se asigna ese costo a ningún viaje."
-                        )
+                        n_traficos = mask_aplica.sum()
+                        if n_traficos == 0:
+                            continue
+                       ci_por_viaje = monto_cliente / n_traficos
+                        df_trips_work.loc[mask_aplica, "CI_op_ligado_operacion"] += ci_por_viaje
                         continue
 
-                    ci_por_viaje = monto_cliente / n_traficos
-                    df_trips_work.loc[mask_aplica, "CI_op_ligado_operacion"] += ci_por_viaje
 
                 # =======================
                 # Total CI por viaje y descarga
