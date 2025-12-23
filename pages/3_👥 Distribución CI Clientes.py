@@ -860,6 +860,7 @@ else:
                     ),
                 )
 
+
 # ============================================================
 # 5️⃣ ASIGNACIÓN DE CI A NIVEL VIAJE
 # ============================================================
@@ -971,7 +972,7 @@ else:
             col_trailer = find_column(df_trips, ["Trailer", "Remolque"])
             col_miles = find_column(
                 df_trips,
-                ["Real Miles", "Real miles", "REAL MILES", "Miles reales", "Real_miles"],
+                ["Real Miles", "Real miles", "REAL MILES", "Miles reales", "Real_miles", "Real Mi"],
             )
 
             columnas_faltan = []
@@ -1006,14 +1007,14 @@ else:
                 df_trips_work["Excluido_por_operador"] = mask_excl
 
                 st.write(
-                    f"Viajes con operador en lista de 'excluidos': {mask_excl.sum()} "
+                    f"Viajes con operador en lista de 'excluidos': {int(mask_excl.sum())} "
                     f"de {len(df_trips_work)} (estos viajes **sí** pueden recibir CI si "
                     "tienen unidad y millas)."
                 )
 
-                # =======================
+                # ======================================================
                 # CI NO OPERATIVOS a nivel viaje
-                # =======================
+                # ======================================================
                 costo_x_milla = st.session_state["costo_no_op_x_milla"]
                 costo_x_viaje_sin = st.session_state["costo_no_op_x_viaje_sin"]
 
@@ -1025,25 +1026,21 @@ else:
                 ci_no_op = np.zeros(len(df_trips_work), dtype=float)
 
                 # Con unidad -> por milla (incluye operadores "excluidos")
-                if costo_x_milla is not None:
-                    idx_con_unidad = (has_unit & (miles > 0)).to_numpy()
-                    ci_no_op[idx_con_unidad] = costo_x_milla * miles.to_numpy()[idx_con_unidad]
+                idx_con_unidad = (has_unit & (miles > 0)).to_numpy()
+                ci_no_op[idx_con_unidad] = float(costo_x_milla) * miles.to_numpy()[idx_con_unidad]
 
                 # Sin unidad -> por viaje (para todos los que NO tienen unidad)
-                if costo_x_viaje_sin is not None:
-                    idx_sin_unidad = (~has_unit).to_numpy()
-                    ci_no_op[idx_sin_unidad] = costo_x_viaje_sin
+                idx_sin_unidad = (~has_unit).to_numpy()
+                ci_no_op[idx_sin_unidad] = float(costo_x_viaje_sin)
 
                 df_trips_work["CI_no_operativo"] = ci_no_op
 
                 st.subheader("Resumen de CI no operativo a nivel viaje")
-                st.write(
-                    df_trips_work["CI_no_operativo"].describe(percentiles=[0.25, 0.5, 0.75])
-                )
+                st.write(df_trips_work["CI_no_operativo"].describe(percentiles=[0.25, 0.5, 0.75]))
 
-                # =======================
+                # ======================================================
                 # CI LIGADOS A OPERACIÓN a nivel viaje
-                # =======================
+                # ======================================================
                 st.subheader("Asignación de CI ligados a la operación a nivel viaje")
 
                 asignaciones_df = st.session_state["asignaciones_df"].copy()
@@ -1056,30 +1053,7 @@ else:
                 )
 
                 # Agregar el tipo de distribución por concepto (del catálogo)
-                tot_client_conc = tot_client_conc.merge(
-                    conceptos_tipos, on="Concepto", how="left"
-                )
-
-                # === Selector: clientes que facturan por milla (override) ===
-                st.markdown("### ⚙️ Ajuste: clientes que facturan por milla")
-
-                clientes_disponibles = (
-                    tot_client_conc["Customer"]
-                    .dropna()
-                    .astype(str)
-                    .sort_values()
-                    .unique()
-                    .tolist()
-                )
-
-                clientes_por_milla = st.multiselect(
-                    "Selecciona clientes para los que TODO el CI operativo se asigne por millas (aunque el catálogo diga Volumen/Viajes/Remolque):",
-                    clientes_disponibles,
-                    default=[],
-                    help="Útil cuando el ingreso real del cliente depende de millas. Evita CI plano por viaje.",
-                    key="clientes_por_milla_ms",
-                )
-                clientes_por_milla_set = set(clientes_por_milla)
+                tot_client_conc = tot_client_conc.merge(conceptos_tipos, on="Concepto", how="left")
 
                 # Inicializar columna CI operativo por viaje
                 df_trips_work["CI_op_ligado_operacion"] = 0.0
@@ -1089,88 +1063,94 @@ else:
                 trailer_str = df_trips_work[col_trailer].astype(str)
                 mask_trailer_lf = trailer_str.str.upper().str.startswith("LF")
 
+                def asignar_op_por_subgrupo(df, mask_aplica, has_unit_s, miles_s, col_dest, monto):
+                    """
+                    Dentro de mask_aplica:
+                      - separa viajes con unidad vs sin unidad
+                      - parte el monto según % de viajes con/sin unidad (por conteo)
+                      - bolsa sin unidad -> igual por viaje
+                      - bolsa con unidad -> por millas (costo/milla * millas del trip)
+                    """
+                    if monto == 0:
+                        return
+
+                    mask_aplica = mask_aplica.fillna(False)
+                    n_total = int(mask_aplica.sum())
+                    if n_total == 0:
+                        return
+
+                    # conteos para porcentajes
+                    n_u = int((mask_aplica & has_unit_s).sum())   # con unidad (aunque millas=0)
+                    mask_su = mask_aplica & (~has_unit_s)         # sin unidad
+                    n_su = int(mask_su.sum())
+
+                    pct_u = n_u / n_total
+                    pct_su = n_su / n_total
+
+                    bolsa_u = monto * pct_u
+                    bolsa_su = monto * pct_su
+
+                    # 1) Sin unidad -> igual por viaje
+                    if n_su > 0 and bolsa_su != 0:
+                        df.loc[mask_su, col_dest] += (bolsa_su / n_su)
+
+                    # 2) Con unidad -> por millas (solo donde millas > 0)
+                    mask_u_millas = mask_aplica & has_unit_s & (miles_s > 0)
+                    total_millas_u = float(miles_s.where(mask_u_millas, 0).sum())
+
+                    if total_millas_u > 0 and bolsa_u != 0:
+                        costo_x_milla_u = bolsa_u / total_millas_u
+                        df.loc[mask_u_millas, col_dest] += costo_x_milla_u * miles_s.where(mask_u_millas, 0)
+                    else:
+                        # Fallback: si hay viajes con unidad pero sin millas válidas, repartir por viaje con unidad
+                        mask_u_fallback = mask_aplica & has_unit_s
+                        n_u_fallback = int(mask_u_fallback.sum())
+                        if n_u_fallback > 0 and bolsa_u != 0:
+                            df.loc[mask_u_fallback, col_dest] += (bolsa_u / n_u_fallback)
+
                 # Loop: asignar por cliente-concepto
                 for _, row in tot_client_conc.iterrows():
                     cliente = str(row["Customer"])
                     concepto = row["Concepto"]
-                    tipo_dist = row["Tipo distribución"]
-                    monto_cliente = float(row["Costo asignado"])
+                    tipo_dist = row.get("Tipo distribución", "Volumen Viajes")
+                    monto_cliente = float(row["Costo asignado"]) if pd.notna(row["Costo asignado"]) else 0.0
 
-                    mask_cliente = df_trips_work[col_customer].astype(str) == cliente
-                    mask_base = mask_cliente
+                    if monto_cliente == 0:
+                        continue
 
+                    mask_base = df_trips_work[col_customer].astype(str) == cliente
                     if not mask_base.any():
                         continue
 
-                    # ✅ Override: si el cliente factura por milla -> forzamos Millas
-                    if cliente in clientes_por_milla_set:
-                        tipo_dist = "Millas"
-
-                    # ---------- Reglas por tipo ----------
+                    # Definir subconjunto que aplica según el tipo de distribución
                     if tipo_dist == "Volumen Viajes":
                         mask_aplica = mask_base
-                        n_traficos = int(mask_aplica.sum())
-                        if n_traficos == 0:
-                            continue
-                        df_trips_work.loc[mask_aplica, "CI_op_ligado_operacion"] += (monto_cliente / n_traficos)
-                        continue
 
-                    if tipo_dist == "Viajes con unidad":
+                    elif tipo_dist == "Viajes con unidad":
                         mask_aplica = mask_base & has_unit_trip
-                        n_traficos = int(mask_aplica.sum())
-                        if n_traficos == 0:
-                            st.warning(
-                                f"Cliente '{cliente}' y concepto '{concepto}' (Viajes con unidad) "
-                                "no tiene viajes con unidad. No se asigna."
-                            )
-                            continue
-                        df_trips_work.loc[mask_aplica, "CI_op_ligado_operacion"] += (monto_cliente / n_traficos)
-                        continue
 
-                    if tipo_dist == "Viajes con Remolque":
+                    elif tipo_dist == "Viajes con Remolque":
                         mask_aplica = mask_base & mask_trailer_lf
-                        n_traficos = int(mask_aplica.sum())
-                        if n_traficos == 0:
-                            st.warning(
-                                f"Cliente '{cliente}' y concepto '{concepto}' (Viajes con Remolque) "
-                                "no tiene viajes con remolque LF. No se asigna."
-                            )
-                            continue
-                        df_trips_work.loc[mask_aplica, "CI_op_ligado_operacion"] += (monto_cliente / n_traficos)
-                        continue
 
-                    if tipo_dist == "Millas":
-                        # ✅ Proporcional a millas válidas (unidad y millas > 0)
-                        mask_millas_validas = mask_base & has_unit_trip & (miles > 0)
-                        total_miles_cliente = float(miles.where(mask_millas_validas, 0).sum())
+                    elif tipo_dist == "Millas":
+                        mask_aplica = mask_base & has_unit_trip
 
-                        if total_miles_cliente <= 0:
-                            st.warning(
-                                f"Cliente '{cliente}' y concepto '{concepto}' (Millas) "
-                                "no tiene millas válidas (unidad y millas > 0). "
-                                "Se reparte por viaje como fallback."
-                            )
-                            n_traficos = int(mask_base.sum())
-                            if n_traficos > 0:
-                                df_trips_work.loc[mask_base, "CI_op_ligado_operacion"] += (monto_cliente / n_traficos)
-                            continue
+                    else:
+                        mask_aplica = mask_base
 
-                        propor = miles.where(mask_millas_validas, 0) / total_miles_cliente
-                        df_trips_work.loc[mask_millas_validas, "CI_op_ligado_operacion"] += (
-                            propor[mask_millas_validas] * monto_cliente
-                        )
-                        continue
+                    # Asignar según tu regla: % unidad/sin unidad y unidad por millas
+                    asignar_op_por_subgrupo(
+                        df=df_trips_work,
+                        mask_aplica=mask_aplica,
+                        has_unit_s=has_unit_trip,
+                        miles_s=miles,
+                        col_dest="CI_op_ligado_operacion",
+                        monto=monto_cliente,
+                    )
 
-                    # Fallback: por viaje (si llega un tipo raro)
-                    mask_aplica = mask_base
-                    n_traficos = int(mask_aplica.sum())
-                    if n_traficos == 0:
-                        continue
-                    df_trips_work.loc[mask_aplica, "CI_op_ligado_operacion"] += (monto_cliente / n_traficos)
-
-                # =======================
+                # ======================================================
                 # Total CI por viaje y descarga
-                # =======================
+                # ======================================================
                 df_trips_work["CI_total"] = (
                     df_trips_work["CI_no_operativo"] + df_trips_work["CI_op_ligado_operacion"]
                 )
