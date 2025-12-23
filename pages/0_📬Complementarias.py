@@ -222,82 +222,81 @@ with tab_captura:
 
     st.divider()
     registrar = st.button("Registrar", type="primary")
-    if not registrar:
-        st.stop()
 
-    errores = []
-    if not empresa: errores.append("Debes seleccionar una empresa.")
-    if not plataforma: errores.append("Debes seleccionar una plataforma.")
-    if not solicitante.strip(): errores.append("El campo 'Solicitante' es obligatorio.")
-    if not motivo_solicitud.strip(): errores.append("El campo 'Motivo de la solicitud' es obligatorio.")
-    if not numero_trafico.strip(): errores.append("El campo 'Número de tráfico' es obligatorio.")
+    if registrar:
+        errores = []
+        if not empresa: errores.append("Debes seleccionar una empresa.")
+        if not plataforma: errores.append("Debes seleccionar una plataforma.")
+        if not solicitante.strip(): errores.append("El campo 'Solicitante' es obligatorio.")
+        if not motivo_solicitud.strip(): errores.append("El campo 'Motivo de la solicitud' es obligatorio.")
+        if not numero_trafico.strip(): errores.append("El campo 'Número de tráfico' es obligatorio.")
 
-    for label, block in [("actual", actual), ("correcto", nuevo)]:
-        if not block["tipo"]:
-            errores.append(f"Debes seleccionar 'Tipo Concepto' ({label}).")
-        if block["tipo"] and len(get_conceptos(block["tipo"])) > 0 and (not block["concepto"] or "Sin datos" in str(block["concepto"])):
-            errores.append(f"Debes seleccionar 'Concepto' ({label}).")
-        if not block["proveedor"].strip():
-            errores.append(f"Debes capturar 'Proveedor' ({label}).")
-        if not block["moneda"]:
-            errores.append(f"Debes seleccionar 'Moneda' ({label}).")
+        for label, block in [("actual", actual), ("correcto", nuevo)]:
+            if not block["tipo"]:
+                errores.append(f"Debes seleccionar 'Tipo Concepto' ({label}).")
+            if block["tipo"] and len(get_conceptos(block["tipo"])) > 0 and (not block["concepto"] or "Sin datos" in str(block["concepto"])):
+                errores.append(f"Debes seleccionar 'Concepto' ({label}).")
+            if not block["proveedor"].strip():
+                errores.append(f"Debes capturar 'Proveedor' ({label}).")
+            if not block["moneda"]:
+                errores.append(f"Debes seleccionar 'Moneda' ({label}).")
 
-    if errores:
-        for e in errores:
-            st.error(e)
-        st.stop()
+        if errores:
+            for e in errores:
+                st.error(e)
+            st.stop()
+    
+        fecha_captura = datetime.now(timezone.utc).isoformat()
 
-    fecha_captura = datetime.now(timezone.utc).isoformat()
+        data_insert = {
+            "fecha_captura": fecha_captura,
+            "estatus": "Pendiente",
 
-    data_insert = {
-        "fecha_captura": fecha_captura,
-        "estatus": "Pendiente",
+            "empresa": empresa,
+            "plataforma": plataforma,
+            "solicitante": solicitante.strip(),
+            "motivo_solicitud": motivo_solicitud.strip(),
+            "numero_trafico": numero_trafico.strip(),
 
-        "empresa": empresa,
-        "plataforma": plataforma,
-        "solicitante": solicitante.strip(),
-        "motivo_solicitud": motivo_solicitud.strip(),
-        "numero_trafico": numero_trafico.strip(),
+            "tipo_concepto_actual": actual["tipo"],
+            "concepto_actual": None if "Sin datos" in str(actual["concepto"]) else actual["concepto"],
+            "proveedor_actual": actual["proveedor"].strip(),
+            "moneda_actual": actual["moneda"],
+            "importe_actual": float(actual["importe"]),
 
-        "tipo_concepto_actual": actual["tipo"],
-        "concepto_actual": None if "Sin datos" in str(actual["concepto"]) else actual["concepto"],
-        "proveedor_actual": actual["proveedor"].strip(),
-        "moneda_actual": actual["moneda"],
-        "importe_actual": float(actual["importe"]),
+            "tipo_concepto_nuevo": nuevo["tipo"],
+            "concepto_nuevo": None if "Sin datos" in str(nuevo["concepto"]) else nuevo["concepto"],
+            "proveedor_nuevo": nuevo["proveedor"].strip(),
+            "moneda_nuevo": nuevo["moneda"],
+            "importe_nuevo": float(nuevo["importe"]),
 
-        "tipo_concepto_nuevo": nuevo["tipo"],
-        "concepto_nuevo": None if "Sin datos" in str(nuevo["concepto"]) else nuevo["concepto"],
-        "proveedor_nuevo": nuevo["proveedor"].strip(),
-        "moneda_nuevo": nuevo["moneda"],
-        "importe_nuevo": float(nuevo["importe"]),
+            "fecha_resuelto": None,
+            "auditor": None,
+        }
 
-        "fecha_resuelto": None,
-        "auditor": None,
-    }
+        try:
+            res = supabase.table("solicitudes_complementarias").insert(data_insert).execute()
+            if not res.data:
+                st.error("No se pudo insertar la solicitud en la base de datos.")
+                st.stop()
 
-    try:
-        res = supabase.table("solicitudes_complementarias").insert(data_insert).execute()
-        if not res.data:
-            st.error("No se pudo insertar la solicitud en la base de datos.")
+            # ✅ folio identity (NO id)
+            folio_num = int(res.data[0]["folio"])
+
+        except Exception as e:
+            st.error(f"Error al guardar en la base de datos: {e}")
             st.stop()
 
-        # ✅ folio identity (NO id)
-        folio_num = int(res.data[0]["folio"])
+        folio_formateado = f"{folio_num:04d}"
 
-    except Exception as e:
-        st.error(f"Error al guardar en la base de datos: {e}")
-        st.stop()
-
-    folio_formateado = f"{folio_num:04d}"
-
-    st.success(
-        "Tú solicitud se ha capturado correctamente, favor de enviar el siguiente texto "
-        "al correo auditoria.operaciones@palosgarza.com"
-    )
-    st.code(
-        f"Mi folio de complementaria es el '#{folio_formateado}', favor de atender mi solicitud",
-        language="text",
-    )
+        st.success(
+            "Tú solicitud se ha capturado correctamente, favor de enviar el siguiente texto "
+            "al correo auditoria.operaciones@palosgarza.com"
+        )
+        st.code(
+            f"Mi folio de complementaria es el '#{folio_formateado}', favor de atender mi solicitud",
+            language="text",
+        )
 
 
 # =========================
