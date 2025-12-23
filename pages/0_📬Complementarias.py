@@ -53,10 +53,7 @@ TIPOS_CONCEPTO = [
 PLATAFORMAS_POR_EMPRESA = {
     "Lincoln": ["STAR USA"],
     "Set Freight": [
-        "STAR USA",
-        "STAR MX",
         "STAR 2.0 SET FREIGHT",
-        "STAR 2.0 PALOS GARZA LOGISTIC",
         "STAR 2.0 PALOS GARZA LOGISMEX",
     ],
     "Set Logis Plus": [
