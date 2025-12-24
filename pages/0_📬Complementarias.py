@@ -261,18 +261,18 @@ with tab_captura:
     with c2:
         tipo_complementaria = st.radio(
             "Tipo de complementaria",
-            ["Modificación de costo", "Agregar costo"],
+            ["Modificación", "Agregar Concepto"],
             horizontal=True,
         )
 
     st.divider()
 
     # --- Bloques (UI) ---
-    if tipo_complementaria == "Modificación de costo":
-        actual = bloque_concepto("actual", "Datos actuales (como están)")
+    if tipo_complementaria == "Modificación":
+        actual = bloque_concepto("actual", "📝Datos actuales (como están)")
         st.divider()
     else:
-        # Para "Agregar costo", no aplica capturar los datos actuales.
+        # Para "Agregar Concepto", no aplica capturar los datos actuales.
         # Se guardarán como N/A
         actual = {
             "tipo": "N/A",
@@ -282,7 +282,7 @@ with tab_captura:
             "importe": None,  # numérico -> guardamos NULL
         }
 
-    nuevo = bloque_concepto("nuevo", "Datos correctos (como deben quedar)")
+    nuevo = bloque_concepto("nuevo", "✅Datos correctos (como deben quedar)")
 
     st.divider()
     registrar = st.button("Registrar", type="primary")
@@ -308,7 +308,7 @@ with tab_captura:
 
         # --- Validación de bloques ---
         blocks_to_validate = [("correcto", nuevo)]
-        if tipo_complementaria == "Modificación de costo":
+        if tipo_complementaria == "Modificación":
             blocks_to_validate.insert(0, ("actual", actual))
 
         for label, block in blocks_to_validate:
@@ -574,8 +574,8 @@ with tab_auditor:
                 show_field("Motivo", r.get("motivo_solicitud"))
                 show_field("Tipo complementaria", tipo_comp)
 
-                # --- Datos actuales (solo si NO es agregar costo o si existen valores reales) ---
-                # (si es "Agregar costo", vienen N/A y no se mostrarán)
+                # --- Datos actuales (solo si NO es agregar concepto o si existen valores reales) ---
+                # (si es "Agregar Concepto", vienen N/A y no se mostrarán)
                 st.divider()
                 st.markdown("### Datos actuales (como están)")
                 show_field("Tipo concepto (actual)", r.get("tipo_concepto_actual"))
