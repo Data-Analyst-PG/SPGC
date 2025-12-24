@@ -156,7 +156,7 @@ def get_conceptos(tipo: str) -> list[str]:
 # =========================
 # UI
 # =========================
-st.header("Registro de complementaria (solo registro)")
+st.header("📬 Complementarias")
 
 tab_captura, tab_auditor = st.tabs(["📝 Captura", "🕵️ Auditor"])
 
@@ -183,7 +183,7 @@ def bloque_concepto(prefix: str, titulo: str):
                 "Concepto",
                 ["Sin datos para mostrar"] if tipo else ["Selecciona primero un tipo"],
                 key=f"{prefix}_concepto",
-                disabled=True,
+                disabled=True,F
             )
         else:
             st.selectbox(
@@ -213,6 +213,12 @@ def bloque_concepto(prefix: str, titulo: str):
 # =========================
 # TAB CAPTURA
 # =========================
+st.markdown(
+    """
+Esta herramienta ayudara a dar seguimiento y llevar un control de las solicitudes de las complementarias.
+En caso de algún inconveniente o comentario con esta plataforma envia un correo a data.analyst@palosgarza.com
+"""
+)
 with tab_captura:
     st.text_input("Fecha", value=datetime.now().strftime("%d/%m/%Y"), disabled=True)
 
@@ -261,7 +267,7 @@ with tab_captura:
     with c2:
         tipo_complementaria = st.radio(
             "Tipo de complementaria",
-            ["Modificación de costo", "Agregar costo"],
+            ["Modificación (concepto, costo, proveedor)", "Agregar concepto"],
             horizontal=True,
         )
 
