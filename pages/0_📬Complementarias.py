@@ -347,6 +347,8 @@ with tab_captura:
 # TAB AUDITOR
 # =========================
 with tab_auditor:
+    import pandas as pd
+
     st.subheader("Solicitudes registradas")
 
     auditor_pwd = st.text_input("Contraseña auditor", type="password")
@@ -365,7 +367,37 @@ with tab_auditor:
         st.stop()
 
     ESTATUS_OPCIONES = ["Pendiente", "En revisión", "Cancelado", "Resuelto"]
+    ESTATUS_ABIERTOS = ["Pendiente", "En revisión"]
+    ESTATUS_CERRADOS = ["Resuelto", "Cancelado"]
 
+    AUDITORES = ["Abel Chontal", "Sasha Raz", "Adrian Texna", "Heidi Rodriguez"]
+
+    # =========================
+    # Helpers
+    # =========================
+    def _is_na(val) -> bool:
+        if val is None:
+            return True
+        s = str(val).strip()
+        return s == "" or s.upper() == "N/A" or s.lower() == "nan"
+
+    def show_field(label: str, value):
+        """Muestra solo si no es N/A / vacío."""
+        if not _is_na(value):
+            st.write(f"**{label}:** {value}")
+
+    def show_money(label: str, value):
+        if value is None:
+            return
+        try:
+            v = float(value)
+        except Exception:
+            return
+        st.write(f"**{label}:** {v:,.2f}")
+
+    # =========================
+    # Filtros generales (aplican a la carga base)
+    # =========================
     colf1, colf2, colf3 = st.columns(3)
     with colf1:
         f_empresa = st.selectbox("Empresa", ["(Todas)"] + EMPRESAS, index=0)
@@ -374,16 +406,13 @@ with tab_auditor:
     with colf3:
         texto = st.text_input("Buscar (folio / solicitante / tráfico)")
 
-    q = supabase.table("solicitudes_complementarias").select(
-        "folio, fecha_captura, estatus, empresa, plataforma, solicitante, numero_trafico, motivo_solicitud, fecha_resuelto"
-    )
+    # Traemos TODA la data para poder mostrar “todo lo capturado”
+    q = supabase.table("solicitudes_complementarias").select("*").order("folio", desc=True).limit(500)
 
     if f_empresa != "(Todas)":
         q = q.eq("empresa", f_empresa)
     if f_estatus != "(Todos)":
         q = q.eq("estatus", f_estatus)
-
-    q = q.order("folio", desc=True).limit(500)
 
     try:
         res = q.execute()
@@ -392,57 +421,234 @@ with tab_auditor:
         st.error(f"No se pudieron cargar solicitudes: {e}")
         st.stop()
 
+    # Búsqueda local
     if texto.strip():
         t = texto.strip().lower()
+
         def match(r):
             return (
                 t in f"{int(r.get('folio', 0)):04d}".lower()
                 or t in str(r.get("solicitante", "")).lower()
                 or t in str(r.get("numero_trafico", "")).lower()
             )
+
         rows = [r for r in rows if match(r)]
 
-    st.write(f"Total: {len(rows)}")
+    # Separación abiertos / cerrados
+    abiertos = [r for r in rows if (r.get("estatus") in ESTATUS_ABIERTOS)]
+    cerrados = [r for r in rows if (r.get("estatus") in ESTATUS_CERRADOS)]
 
-    for r in rows:
-        folio_num = int(r["folio"])
-        folio_fmt = f"{folio_num:04d}"
-        estatus_actual = r.get("estatus") or "Pendiente"
+    # TOTAL SOLO ABIERTOS
+    st.write(f"**Total (Pendiente / En revisión): {len(abiertos)}**")
 
-        with st.expander(f"Folio #{folio_fmt} | {r.get('empresa')} | {estatus_actual}"):
-            st.write(f"**Fecha:** {r.get('fecha_captura')}")
-            st.write(f"**Plataforma:** {r.get('plataforma')}")
-            st.write(f"**Solicitante:** {r.get('solicitante')}")
-            st.write(f"**Tráfico:** {r.get('numero_trafico')}")
-            st.write(f"**Motivo:** {r.get('motivo_solicitud')}")
-            if r.get("fecha_resuelto"):
-                st.write(f"**Fecha resuelto/cancelado:** {r.get('fecha_resuelto')}")
+    # =========================
+    # LISTA ABIERTOS (expanders)
+    # =========================
+    if not abiertos:
+        st.info("No hay solicitudes pendientes o en revisión con los filtros actuales.")
+    else:
+        for r in abiertos:
+            folio_num = int(r["folio"])
+            folio_fmt = f"{folio_num:04d}"
+            estatus_actual = r.get("estatus") or "Pendiente"
+            tipo_comp = r.get("tipo_complementaria")
 
-            st.divider()
-            c1, c2 = st.columns([2, 1])
+            with st.expander(f"Folio #{folio_fmt} | {r.get('empresa')} | {estatus_actual}"):
+                # --- Datos generales (mostrar todo lo que no sea N/A) ---
+                show_field("Fecha captura", r.get("fecha_captura"))
+                show_field("Última modificación", r.get("fecha_ultima_modificacion"))
+                show_field("Empresa", r.get("empresa"))
+                show_field("Plataforma", r.get("plataforma"))
+                show_field("Solicitante", r.get("solicitante"))
+                show_field("Tráfico", r.get("numero_trafico"))
+                show_field("Motivo", r.get("motivo_solicitud"))
+                show_field("Tipo complementaria", tipo_comp)
 
-            with c1:
-                nuevo_estatus = st.selectbox(
-                    "Cambiar estatus",
-                    ESTATUS_OPCIONES,
-                    index=ESTATUS_OPCIONES.index(estatus_actual) if estatus_actual in ESTATUS_OPCIONES else 0,
-                    key=f"estatus_{folio_num}",
+                # --- Datos actuales (solo si NO es agregar costo o si existen valores reales) ---
+                # (si es "Agregar costo", vienen N/A y no se mostrarán)
+                st.divider()
+                st.markdown("### Datos actuales (como están)")
+                show_field("Tipo concepto (actual)", r.get("tipo_concepto_actual"))
+                show_field("Concepto (actual)", r.get("concepto_actual"))
+                show_field("Proveedor (actual)", r.get("proveedor_actual"))
+                show_field("Moneda (actual)", r.get("moneda_actual"))
+                show_money("Importe (actual)", r.get("importe_actual"))
+
+                st.divider()
+                st.markdown("### Datos correctos (como deben quedar)")
+                show_field("Tipo concepto (nuevo)", r.get("tipo_concepto_nuevo"))
+                show_field("Concepto (nuevo)", r.get("concepto_nuevo"))
+                show_field("Proveedor (nuevo)", r.get("proveedor_nuevo"))
+                show_field("Moneda (nuevo)", r.get("moneda_nuevo"))
+                show_money("Importe (nuevo)", r.get("importe_nuevo"))
+
+                # --- Sección de actualización ---
+                st.divider()
+                c1, c2 = st.columns([2, 1])
+
+                with c1:
+                    # Estatus
+                    nuevo_estatus = st.selectbox(
+                        "Cambiar estatus",
+                        ESTATUS_OPCIONES,
+                        index=ESTATUS_OPCIONES.index(estatus_actual) if estatus_actual in ESTATUS_OPCIONES else 0,
+                        key=f"estatus_{folio_num}",
+                    )
+
+                    # Auditor
+                    auditor_actual = r.get("auditor")
+                    idx_aud = AUDITORES.index(auditor_actual) if auditor_actual in AUDITORES else 0
+                    auditor_sel = st.selectbox(
+                        "Auditor que actualiza",
+                        AUDITORES,
+                        index=idx_aud,
+                        key=f"auditor_{folio_num}",
+                    )
+
+                    # Comentarios
+                    comentarios_prev = r.get("comentarios_auditor") or ""
+                    comentarios = st.text_area(
+                        "Comentarios del auditor",
+                        value=comentarios_prev,
+                        height=120,
+                        key=f"coment_{folio_num}",
+                    )
+
+                with c2:
+                    if st.button("Guardar cambios", key=f"btn_guardar_{folio_num}"):
+                        now_iso = datetime.now(timezone.utc).isoformat()
+
+                        update_payload = {
+                            "estatus": nuevo_estatus,
+                            "auditor": auditor_sel,
+                            "comentarios_auditor": comentarios.strip(),
+                            "fecha_ultima_modificacion": now_iso,
+                        }
+
+                        # Si se resuelve o cancela, guardamos fecha_resuelto
+                        if nuevo_estatus in ["Resuelto", "Cancelado"]:
+                            update_payload["fecha_resuelto"] = now_iso
+                        else:
+                            update_payload["fecha_resuelto"] = None
+
+                        try:
+                            supabase.table("solicitudes_complementarias") \
+                                .update(update_payload) \
+                                .eq("folio", folio_num) \
+                                .execute()
+
+                            st.success(f"Actualizado folio #{folio_fmt}")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"No se pudo actualizar: {e}")
+
+    # =========================
+    # TABLA CERRADOS + EXPORTS
+    # =========================
+    st.divider()
+    st.subheader("Histórico (Resueltos / Cancelados)")
+
+    # Filtros para cerrados
+    colh1, colh2, colh3, colh4 = st.columns(4)
+    with colh1:
+        h_empresa = st.selectbox("Empresa (histórico)", ["(Todas)"] + EMPRESAS, index=0, key="h_emp")
+    with colh2:
+        h_estatus = st.selectbox("Estatus (histórico)", ["(Todos)"] + ESTATUS_CERRADOS, index=0, key="h_est")
+    with colh3:
+        h_solic = st.text_input("Solicitante (contiene)", key="h_sol")
+    with colh4:
+        h_rango = st.date_input(
+            "Rango de fecha (captura)",
+            value=(datetime.now().date().replace(day=1), datetime.now().date()),
+            key="h_fecha",
+        )
+
+    cerr = cerrados.copy()
+
+    if h_empresa != "(Todas)":
+        cerr = [r for r in cerr if r.get("empresa") == h_empresa]
+    if h_estatus != "(Todos)":
+        cerr = [r for r in cerr if r.get("estatus") == h_estatus]
+    if h_solic.strip():
+        s = h_solic.strip().lower()
+        cerr = [r for r in cerr if s in str(r.get("solicitante", "")).lower()]
+
+    # filtro por rango fecha usando fecha_captura (ISO)
+    if isinstance(h_rango, tuple) and len(h_rango) == 2 and h_rango[0] and h_rango[1]:
+        d1, d2 = h_rango
+        def in_range(r):
+            fc = r.get("fecha_captura")
+            if not fc:
+                return False
+            try:
+                dt = pd.to_datetime(fc, utc=True).date()
+            except Exception:
+                return False
+            return d1 <= dt <= d2
+        cerr = [r for r in cerr if in_range(r)]
+
+    if not cerr:
+        st.info("No hay registros en el histórico con esos filtros.")
+    else:
+        # Tabla resumida (pero exporta todo)
+        df_cerr = pd.DataFrame(cerr)
+
+        # Orden de columnas sugerido (si existen)
+        cols_pref = [
+            "folio", "estatus", "empresa", "plataforma", "solicitante", "numero_trafico",
+            "tipo_complementaria", "fecha_captura", "fecha_ultima_modificacion", "fecha_resuelto",
+            "auditor", "comentarios_auditor",
+            "tipo_concepto_actual", "concepto_actual", "proveedor_actual", "moneda_actual", "importe_actual",
+            "tipo_concepto_nuevo", "concepto_nuevo", "proveedor_nuevo", "moneda_nuevo", "importe_nuevo",
+            "motivo_solicitud",
+        ]
+        cols = [c for c in cols_pref if c in df_cerr.columns] + [c for c in df_cerr.columns if c not in cols_pref]
+        df_cerr = df_cerr[cols]
+
+        st.dataframe(df_cerr, use_container_width=True)
+
+        # Exports (cerrados filtrados)
+        csv_bytes = df_cerr.to_csv(index=False).encode("utf-8")
+
+        cexp1, cexp2, cexp3 = st.columns(3)
+        with cexp1:
+            st.download_button(
+                "Descargar CSV (filtrado)",
+                data=csv_bytes,
+                file_name="historico_filtrado.csv",
+                mime="text/csv",
+            )
+        with cexp2:
+            try:
+                import io
+                buf = io.BytesIO()
+                with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+                    df_cerr.to_excel(writer, index=False, sheet_name="Historico")
+                st.download_button(
+                    "Descargar Excel (filtrado)",
+                    data=buf.getvalue(),
+                    file_name="historico_filtrado.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 )
+            except Exception as e:
+                st.warning(f"No se pudo generar Excel: {e}")
 
-            with c2:
-                if st.button("Guardar estatus", key=f"btn_guardar_{folio_num}"):
-                    update_payload = {"estatus": nuevo_estatus}
-
-                    # Si se resuelve o cancela, guardamos fecha_resuelto
-                    if nuevo_estatus in ["Resuelto", "Cancelado"]:
-                        update_payload["fecha_resuelto"] = datetime.now(timezone.utc).isoformat()
-                    else:
-                        update_payload["fecha_resuelto"] = None
-
-                    try:
-                        # ✅ Actualiza por folio (NO por id)
-                        supabase.table("solicitudes_complementarias").update(update_payload).eq("folio", folio_num).execute()
-                        st.success(f"Estatus actualizado para folio #{folio_fmt}")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"No se pudo actualizar el estatus: {e}")
+        # Descargar TODA la data (según carga base rows, sin filtros de histórico)
+        with cexp3:
+            df_all = pd.DataFrame(rows) if rows else pd.DataFrame()
+            if not df_all.empty:
+                all_csv = df_all.to_csv(index=False).encode("utf-8")
+                st.download_button(
+                    "Descargar TODA la data (CSV)",
+                    data=all_csv,
+                    file_name="toda_la_data.csv",
+                    mime="text/csv",
+                )
+            else:
+                st.download_button(
+                    "Descargar TODA la data (CSV)",
+                    data="".encode("utf-8"),
+                    file_name="toda_la_data.csv",
+                    mime="text/csv",
+                    disabled=True,
+                )
