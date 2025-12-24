@@ -210,11 +210,34 @@ with tab_captura:
 
     solicitante = st.text_input("Solicitante")
     motivo_solicitud = st.text_area("Motivo de la solicitud")
-    numero_trafico = st.text_input("Número de tráfico")
+
+    c1, c2 = st.columns(2)
+    with c1:
+        numero_trafico = st.text_input("Número de tráfico")
+    with c2:
+        tipo_complementaria = st.radio(
+            "Tipo de complementaria",
+            ["Modificación de costo", "Agregar costo"],
+            horizontal=True,
+        )
 
     st.divider()
-    actual = bloque_concepto("actual", "Datos actuales (como están)")
-    st.divider()
+
+    # --- Bloques (UI) ---
+    if tipo_complementaria == "Modificación de costo":
+        actual = bloque_concepto("actual", "Datos actuales (como están)")
+        st.divider()
+    else:
+        # Para "Agregar costo", no aplica capturar los datos actuales.
+        # Se guardarán como N/A
+        actual = {
+            "tipo": "N/A",
+            "concepto": "N/A",
+            "proveedor": "N/A",
+            "moneda": "N/A",
+            "importe": None,  # numérico -> guardamos NULL
+        }
+
     nuevo = bloque_concepto("nuevo", "Datos correctos (como deben quedar)")
 
     st.divider()
@@ -222,27 +245,49 @@ with tab_captura:
 
     if registrar:
         errores = []
-        if not empresa: errores.append("Debes seleccionar una empresa.")
-        if not plataforma: errores.append("Debes seleccionar una plataforma.")
-        if not solicitante.strip(): errores.append("El campo 'Solicitante' es obligatorio.")
-        if not motivo_solicitud.strip(): errores.append("El campo 'Motivo de la solicitud' es obligatorio.")
-        if not numero_trafico.strip(): errores.append("El campo 'Número de tráfico' es obligatorio.")
 
-        for label, block in [("actual", actual), ("correcto", nuevo)]:
+        # --- Validaciones generales ---
+        if not empresa:
+            errores.append("Debes seleccionar una empresa.")
+        if not plataforma:
+            errores.append("Debes seleccionar una plataforma.")
+        if not solicitante.strip():
+            errores.append("El campo 'Solicitante' es obligatorio.")
+        if not motivo_solicitud.strip():
+            errores.append("El campo 'Motivo de la solicitud' es obligatorio.")
+        if not numero_trafico.strip():
+            errores.append("El campo 'Número de tráfico' es obligatorio.")
+
+        # --- Validación de bloques ---
+        blocks_to_validate = [("correcto", nuevo)]
+        if tipo_complementaria == "Modificación de costo":
+            blocks_to_validate.insert(0, ("actual", actual))
+
+        for label, block in blocks_to_validate:
             if not block["tipo"]:
                 errores.append(f"Debes seleccionar 'Tipo Concepto' ({label}).")
-            if block["tipo"] and len(get_conceptos(block["tipo"])) > 0 and (not block["concepto"] or "Sin datos" in str(block["concepto"])):
+
+            if block["tipo"] and len(get_conceptos(block["tipo"])) > 0 and (
+                not block["concepto"] or "Sin datos" in str(block["concepto"])
+            ):
                 errores.append(f"Debes seleccionar 'Concepto' ({label}).")
-            if not block["proveedor"].strip():
+
+            if not str(block["proveedor"]).strip():
                 errores.append(f"Debes capturar 'Proveedor' ({label}).")
+
             if not block["moneda"]:
                 errores.append(f"Debes seleccionar 'Moneda' ({label}).")
+
+            # El importe normalmente viene como número, pero validamos por seguridad
+            if block.get("importe", None) in [None, ""]:
+                errores.append(f"Debes capturar 'Importe' ({label}).")
 
         if errores:
             for e in errores:
                 st.error(e)
             st.stop()
-    
+
+        # --- Insert ---
         fecha_captura = datetime.now(timezone.utc).isoformat()
 
         data_insert = {
@@ -253,17 +298,20 @@ with tab_captura:
             "plataforma": plataforma,
             "solicitante": solicitante.strip(),
             "motivo_solicitud": motivo_solicitud.strip(),
+            "tipo_complementaria": tipo_complementaria,
             "numero_trafico": numero_trafico.strip(),
 
+            # ACTUAL
             "tipo_concepto_actual": actual["tipo"],
             "concepto_actual": None if "Sin datos" in str(actual["concepto"]) else actual["concepto"],
-            "proveedor_actual": actual["proveedor"].strip(),
+            "proveedor_actual": str(actual["proveedor"]).strip(),
             "moneda_actual": actual["moneda"],
-            "importe_actual": float(actual["importe"]),
+            "importe_actual": None if actual["importe"] is None else float(actual["importe"]),
 
+            # NUEVO
             "tipo_concepto_nuevo": nuevo["tipo"],
             "concepto_nuevo": None if "Sin datos" in str(nuevo["concepto"]) else nuevo["concepto"],
-            "proveedor_nuevo": nuevo["proveedor"].strip(),
+            "proveedor_nuevo": str(nuevo["proveedor"]).strip(),
             "moneda_nuevo": nuevo["moneda"],
             "importe_nuevo": float(nuevo["importe"]),
 
@@ -277,7 +325,6 @@ with tab_captura:
                 st.error("No se pudo insertar la solicitud en la base de datos.")
                 st.stop()
 
-            # ✅ folio identity (NO id)
             folio_num = int(res.data[0]["folio"])
 
         except Exception as e:
