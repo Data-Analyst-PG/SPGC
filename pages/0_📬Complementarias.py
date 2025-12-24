@@ -335,6 +335,49 @@ with tab_captura:
                 st.error(e)
             st.stop()
 
+        # =========================
+        # ALERTA: Tráfico ya registrado (puede haber varias complementarias)
+        # =========================
+        numero_trafico_clean = numero_trafico.strip().upper()
+
+        try:
+            dup = (
+                supabase.table("solicitudes_complementarias")
+                .select("folio, fecha_captura, solicitante, numero_trafico, empresa, sucursal, estatus")
+                .eq("numero_trafico", numero_trafico_clean)
+                .order("folio", desc=True)
+                .limit(10)
+                .execute()
+            )
+            dup_rows = dup.data or []
+        except Exception as e:
+            dup_rows = []
+            st.warning(f"No se pudo validar tráfico duplicado: {e}")
+
+        if dup_rows:
+            lineas = [
+                "⚠️ **Este tráfico ya fue registrado previamente**",
+                f"**Esta sería la complementaria #{len(dup_rows)+1} para este tráfico.**",
+                f"**Tráfico:** {numero_trafico_clean}",
+                f"**Complementarias previas encontradas:** {len(dup_rows)}",
+                "",
+                "**Detalle (más reciente primero):**",
+            ]
+
+            for d in dup_rows[:5]:
+                folio_prev = f"{int(d.get('folio', 0)):04d}"
+                lineas.append(
+                    f"- **#{folio_prev}** | {d.get('empresa','')} | {d.get('sucursal','')} | {d.get('estatus','')} | "
+                    f"{d.get('solicitante','')} | {d.get('fecha_captura','')}"
+                )
+
+            if len(dup_rows) > 5:
+                lineas.append(f"- ... y **{len(dup_rows) - 5}** más")
+
+            st.error("\n".join(lineas))
+
+
+
         # --- Insert ---
         fecha_captura = datetime.now(timezone.utc).isoformat()
 
@@ -348,7 +391,7 @@ with tab_captura:
             "solicitante": solicitante.strip(),
             "motivo_solicitud": motivo_solicitud.strip(),
             "tipo_complementaria": tipo_complementaria,
-            "numero_trafico": numero_trafico.strip(),
+            "numero_trafico": numero_trafico_clean,
 
             # ACTUAL
             "tipo_concepto_actual": actual["tipo"],
@@ -475,6 +518,8 @@ with tab_auditor:
 
     if f_empresa != "(Todas)":
         q = q.eq("empresa", f_empresa)
+    if f_sucursal != "(Todas)":
+        q = q.eq("sucursal", f_sucursal)
     if f_estatus != "(Todos)":
         q = q.eq("estatus", f_estatus)
 
@@ -671,7 +716,7 @@ with tab_auditor:
 
         # Orden de columnas sugerido (si existen)
         cols_pref = [
-            "folio", "estatus", "empresa", "plataforma", "solicitante", "numero_trafico",
+            "folio", "estatus", "empresa", "sucursal", "plataforma", "solicitante", "numero_trafico",
             "tipo_complementaria", "fecha_captura", "fecha_ultima_modificacion", "fecha_resuelto",
             "auditor", "comentarios_auditor",
             "tipo_concepto_actual", "concepto_actual", "proveedor_actual", "moneda_actual", "importe_actual",
