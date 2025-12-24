@@ -28,7 +28,29 @@ supabase = get_supabase_client()
 # =========================
 EMPRESAS = ["Set Freight", "Lincoln", "Set Logis Plus", "Picus", "Igloo"]
 MONEDAS = ["MXN", "USD"]
+def _title_case(s: str) -> str:
+    # "CONSOLIDADO QUERETARO" -> "Consolidado Queretaro"
+    return " ".join(w.capitalize() for w in str(s).strip().split())
 
+SUCURSALES_POR_EMPRESA = {
+    "Lincoln": [],  # no tiene
+    "Picus": ["Carrier Rl", "Carrier RC", "Plus NLD", "Plus QRO", "Logistica"],
+    "Igloo": ["Carrier", "Plus", "Logistica"],
+    "Set Freight": [
+        _title_case(x) for x in [
+            "CARGAR", "CHICAGO", "CONSOLIDADO", "CONSOLIDADO QUERETARO", "DALLAS",
+            "GUADALAJARA", "LEON", "LINCOLN LOGISTICS", "LUIS MONCAYO", "MG HAULERS",
+            "MONTERREY", "NUEVO LAREDO", "QUERETARO", "RAMOS ARIZPE", "ROLANDO ALFARO",
+            "SLP LOGISTICS"
+        ]
+    ],
+    "Set Logis Plus": [
+        _title_case(x) for x in [
+            "BASICOS GJ", "AG FLEET (ROLANDO)", "AURA TRANSPORT",
+            "JOEDAN TRANSPORT", "EFRAIN GARCIA"
+        ]
+    ],
+}
 TIPOS_CONCEPTO = [
     "OTROS",
     "TIPO MOVIMIENTO",
@@ -194,12 +216,34 @@ def bloque_concepto(prefix: str, titulo: str):
 with tab_captura:
     st.text_input("Fecha", value=datetime.now().strftime("%d/%m/%Y"), disabled=True)
 
-    c1, c2 = st.columns(2)
+    c1, c2, c3 = st.columns(3)
     with c1:
         empresa = st.selectbox("Empresa", EMPRESAS, index=None, placeholder="Selecciona una empresa")
 
-    plataformas_opciones = PLATAFORMAS_POR_EMPRESA.get(empresa, [])
+    sucursales_opciones = SUCURSALES_POR_EMPRESA.get(empresa, []) if empresa else []
     with c2:
+        if not empresa:
+            sucursal = st.selectbox(
+                "Sucursal",
+                ["Selecciona primero una empresa"],
+                index=0,
+                disabled=True,
+            )
+            sucursal = None
+        elif len(sucursales_opciones) == 0:
+            # Lincoln u otra sin sucursales
+            sucursal = "N/A"
+            st.text_input("Sucursal", value="N/A", disabled=True)
+        else:
+            sucursal = st.selectbox(
+                "Sucursal",
+                sucursales_opciones,
+                index=None,
+                placeholder="Selecciona una sucursal",
+            )
+
+    plataformas_opciones = PLATAFORMAS_POR_EMPRESA.get(empresa, [])
+    with c3:
         plataforma = st.selectbox(
             "Plataforma",
             plataformas_opciones,
@@ -257,6 +301,10 @@ with tab_captura:
             errores.append("El campo 'Motivo de la solicitud' es obligatorio.")
         if not numero_trafico.strip():
             errores.append("El campo 'Número de tráfico' es obligatorio.")
+        if empresa and len(SUCURSALES_POR_EMPRESA.get(empresa, [])) > 0:
+            if not sucursal or str(sucursal).strip() == "":
+                errores.append("Debes seleccionar una sucursal.")
+
 
         # --- Validación de bloques ---
         blocks_to_validate = [("correcto", nuevo)]
@@ -295,6 +343,7 @@ with tab_captura:
             "estatus": "Pendiente",
 
             "empresa": empresa,
+            "sucursal": sucursal if sucursal else "N/A",
             "plataforma": plataforma,
             "solicitante": solicitante.strip(),
             "motivo_solicitud": motivo_solicitud.strip(),
@@ -398,12 +447,27 @@ with tab_auditor:
     # =========================
     # Filtros generales (aplican a la carga base)
     # =========================
-    colf1, colf2, colf3 = st.columns(3)
+    colf1, colf2, colf3, colf4 = st.columns(4)
+
     with colf1:
         f_empresa = st.selectbox("Empresa", ["(Todas)"] + EMPRESAS, index=0)
+
     with colf2:
-        f_estatus = st.selectbox("Estatus", ["(Todos)"] + ESTATUS_OPCIONES, index=0)
+        # opciones de sucursal dependientes de la empresa elegida
+        suc_opts = ["(Todas)"]
+        if f_empresa != "(Todas)":
+            suc_list = SUCURSALES_POR_EMPRESA.get(f_empresa, [])
+            suc_opts += (suc_list if len(suc_list) > 0 else ["N/A"])
+        else:
+            # si es todas, permitir filtrar por N/A (Lincoln) o dejar en (Todas)
+            suc_opts += ["N/A"]
+
+        f_sucursal = st.selectbox("Sucursal", suc_opts, index=0)
+
     with colf3:
+        f_estatus = st.selectbox("Estatus", ["(Todos)"] + ESTATUS_OPCIONES, index=0)
+
+    with colf4:
         texto = st.text_input("Buscar (folio / solicitante / tráfico)")
 
     # Traemos TODA la data para poder mostrar “todo lo capturado”
@@ -458,6 +522,7 @@ with tab_auditor:
                 show_field("Fecha captura", r.get("fecha_captura"))
                 show_field("Última modificación", r.get("fecha_ultima_modificacion"))
                 show_field("Empresa", r.get("empresa"))
+                show_field("Sucursal", r.get("sucursal"))
                 show_field("Plataforma", r.get("plataforma"))
                 show_field("Solicitante", r.get("solicitante"))
                 show_field("Tráfico", r.get("numero_trafico"))
@@ -549,14 +614,23 @@ with tab_auditor:
     st.subheader("Histórico (Resueltos / Cancelados)")
 
     # Filtros para cerrados
-    colh1, colh2, colh3, colh4 = st.columns(4)
+    colh1, colh2, colh3, colh4, colh5 = st.columns(5)
     with colh1:
         h_empresa = st.selectbox("Empresa (histórico)", ["(Todas)"] + EMPRESAS, index=0, key="h_emp")
     with colh2:
-        h_estatus = st.selectbox("Estatus (histórico)", ["(Todos)"] + ESTATUS_CERRADOS, index=0, key="h_est")
+        # opciones de sucursal dependientes de la empresa elegida
+        suc_opts = ["(Todas)"]
+        if h_empresa != "(Todas)":
+            suc_opts += (SUCURSALES_POR_EMPRESA.get(h_empresa, []) or ["N/A"])
+        else:
+            # si es todas, dejamos (Todas) y filtramos por texto opcional
+            suc_opts += ["N/A"]
+        h_sucursal = st.selectbox("Sucursal (histórico)", suc_opts, index=0, key="h_suc")
     with colh3:
-        h_solic = st.text_input("Solicitante (contiene)", key="h_sol")
+        h_estatus = st.selectbox("Estatus (histórico)", ["(Todos)"] + ESTATUS_CERRADOS, index=0, key="h_est")
     with colh4:
+        h_solic = st.text_input("Solicitante (contiene)", key="h_sol")
+    with colh5:
         h_rango = st.date_input(
             "Rango de fecha (captura)",
             value=(datetime.now().date().replace(day=1), datetime.now().date()),
@@ -567,6 +641,8 @@ with tab_auditor:
 
     if h_empresa != "(Todas)":
         cerr = [r for r in cerr if r.get("empresa") == h_empresa]
+    if h_sucursal != "(Todas)":
+        cerr = [r for r in cerr if (r.get("sucursal") or "N/A") == h_sucursal]
     if h_estatus != "(Todos)":
         cerr = [r for r in cerr if r.get("estatus") == h_estatus]
     if h_solic.strip():
