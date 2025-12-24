@@ -156,7 +156,7 @@ def get_conceptos(tipo: str) -> list[str]:
 # =========================
 # UI
 # =========================
-st.header("Registro de complementaria (solo registro)")
+st.header("📬 Complementarias")
 
 tab_captura, tab_auditor = st.tabs(["📝 Captura", "🕵️ Auditor"])
 
