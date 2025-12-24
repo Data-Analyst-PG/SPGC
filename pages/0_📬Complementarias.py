@@ -156,7 +156,7 @@ def get_conceptos(tipo: str) -> list[str]:
 # =========================
 # UI
 # =========================
-st.header("📬 Complementarias")
+st.header("Registro de complementaria (solo registro)")
 
 tab_captura, tab_auditor = st.tabs(["📝 Captura", "🕵️ Auditor"])
 
@@ -183,7 +183,7 @@ def bloque_concepto(prefix: str, titulo: str):
                 "Concepto",
                 ["Sin datos para mostrar"] if tipo else ["Selecciona primero un tipo"],
                 key=f"{prefix}_concepto",
-                disabled=True,F
+                disabled=True,
             )
         else:
             st.selectbox(
@@ -213,7 +213,6 @@ def bloque_concepto(prefix: str, titulo: str):
 # =========================
 # TAB CAPTURA
 # =========================
-
 with tab_captura:
     st.text_input("Fecha", value=datetime.now().strftime("%d/%m/%Y"), disabled=True)
 
@@ -262,7 +261,7 @@ with tab_captura:
     with c2:
         tipo_complementaria = st.radio(
             "Tipo de complementaria",
-            ["Modificación (concepto, costo, proveedor)", "Agregar concepto"],
+            ["Modificación de costo", "Agregar costo"],
             horizontal=True,
         )
 
