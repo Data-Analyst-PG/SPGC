@@ -3,11 +3,14 @@ import pandas as pd
 from io import BytesIO
 from supabase import create_client, Client
 from datetime import date
+from streamlit.runtime.scriptrunner import StopException
 
 # --- CONFIGURACIÓN SUPABASE ---
 url = st.secrets["SUPABASE_URL"]
 key = st.secrets["SUPABASE_KEY"]
 supabase = create_client(url, key)
+
+
 
 # ======================================================================================================
 st.title("🧾Prorrateo de Gastos Generales")
@@ -24,17 +27,27 @@ if uploaded_file:
         # Leer hoja específica
         df = pd.read_excel(uploaded_file, sheet_name="PASO 1")
         df.columns = df.columns.str.strip().str.upper()
-        st.session_state["df_original"] = df 
 
-        # Asegurar nombres consistentes
-        df.columns = df.columns.str.strip().str.upper()
+        required = {"SUCURSAL", "AREA/CUENTA", "CARGOS"}
+        missing = required - set(df.columns)
+        if missing:
+            st.error(f"❌ Faltan columnas requeridas en PASO 1: {sorted(missing)}")
+            st.stop()
 
-        # Filtrar "GASTO GENERAL"
-        gasto_general = df[df["SUCURSAL"] == "GASTO GENERAL"]
+        st.session_state["df_original"] = df
+
+        # Filtrar COMUNES (antes "GASTO GENERAL"): INTERNO + EXTERNO
+        df["SUCURSAL"] = df["SUCURSAL"].astype(str).str.strip().str.upper()
+        comunes_base = df[df["SUCURSAL"].isin(["GASTO GENERAL", "INTERNO", "EXTERNO"])].copy()
+
+        # Validación clara
+        if comunes_base.empty:
+            st.error("❌ No hay filas con SUCURSAL = GASTO GENERAL / INTERNO / EXTERNO. No hay comunes para resumir.")
+            st.stop()
 
         # Agrupar por AREA/CUENTA y sumar los CARGOS
         resumen = (
-            gasto_general
+            comunes_base
             .groupby("AREA/CUENTA", as_index=False)["CARGOS"]
             .sum()
             .sort_values(by="CARGOS", ascending=False)
@@ -60,6 +73,8 @@ if uploaded_file:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
+    except StopException:
+        raise
     except Exception as e:
         st.error(f"Error procesando el archivo: {e}")
 
@@ -181,7 +196,7 @@ if 'resumen' in st.session_state:
         st.success("Catálogo actualizado en Supabase.")
 
 else:
-    st.warning("Primero genera el resumen de GASTO GENERAL en el Módulo 1.")
+    st.warning("Primero genera el resumen de COMUNES (GASTO GENERAL / INTERNO / EXTERNO) en el Módulo 1.")
 
 # ======================================================================================================
 st.title("📊Datos Generales y Cálculo de Porcentajes")
@@ -222,7 +237,10 @@ if archivo_gts:
         st.dataframe(porcentajes, use_container_width=True)
 
         # Guardar en memoria para módulo 4
-        st.session_state["porcentajes"] = porcentajes.set_index("SUCURSAL")
+        st.session_state["porcentajes"] = porcentajes.assign(
+            SUCURSAL=lambda d: d["SUCURSAL"].astype(str).str.strip().str.upper()
+        ).set_index("SUCURSAL")
+
 
     except Exception as e:
         st.error(f"Ocurrió un error al procesar la hoja GTS: {e}")
@@ -286,7 +304,10 @@ def anexar_trafico_fecha(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 # ============ BLOQUE A: COSTOS CON SUCURSAL ASIGNADA ============
-no_general = df_original[df_original["SUCURSAL"].str.upper().ne("GASTO GENERAL")].copy()
+df_original["SUCURSAL"] = df_original["SUCURSAL"].astype(str).str.strip().str.upper()
+
+# COSTO INDIRECTO = todo lo que NO sea INTERNO/EXTERNO
+no_general = df_original[~df_original["SUCURSAL"].isin(["GASTO GENERAL", "INTERNO", "EXTERNO"])].copy()
 
 # TIPO COSTO fijo para este bloque
 no_general["TIPO COSTO"] = "COSTO INDIRECTO"
@@ -305,23 +326,40 @@ directos_agr = (
 # Anexar Trafico/Fecha por sucursal (fecha seleccionada)
 directos_agr = anexar_trafico_fecha(directos_agr)
 
-# ============ BLOQUE B: GASTO GENERAL (prorrateo) ============
-gasto_general = df_original[df_original["SUCURSAL"].str.upper().eq("GASTO GENERAL")].copy()
+# ============ BLOQUE B: GASTO GENERAL (Viejo) INTERNO + EXTERNO (Nuevo) (prorrateo) ============
+# COMUNES = GASTO GENERAL (viejo) + INTERNO / EXTERNO (nuevo)
+comunes = df_original[df_original["SUCURSAL"].isin(["GASTO GENERAL", "INTERNO", "EXTERNO"])].copy()
 
-# TIPO COSTO por regla de CONCEPTO (prefijos)
-def tipo_costo_por_concepto(concepto: str) -> str:
-    c = str(concepto).strip().upper()
-    if c.startswith("IN"):
+if comunes.empty:
+    st.error("❌ No hay filas con SUCURSAL = GASTO GENERAL / INTERNO / EXTERNO para prorratear.")
+    st.stop()
+
+# SUCURSAL define el común
+def tipo_costo_hibrido(row) -> str:
+    suc = str(row.get("SUCURSAL", "")).strip().upper()
+
+    # Nuevo esquema
+    if suc == "INTERNO":
         return "COMUN INTERNO"
-    if c.startswith("EX"):
+    if suc == "EXTERNO":
         return "COMUN EXTERNO"
+
+    # Esquema viejo: GASTO GENERAL decide por CONCEPTO (IN/EX)
+    if suc == "GASTO GENERAL":
+        c = str(row.get("CONCEPTO", "")).strip().upper()
+        if c.startswith("IN"):
+            return "COMUN INTERNO"
+        if c.startswith("EX"):
+            return "COMUN EXTERNO"
+        return "COSTO INDIRECTO"
+
     return "COSTO INDIRECTO"
 
-gasto_general["TIPO COSTO"] = gasto_general["CONCEPTO"].map(tipo_costo_por_concepto)
+comunes["TIPO COSTO"] = comunes.apply(tipo_costo_hibrido, axis=1)
 
 # Agrupar por AREA/CUENTA + TIPO COSTO (para preservar la etiqueta)
 gg_agr = (
-    gasto_general
+    comunes
     .groupby(["AREA/CUENTA", "TIPO COSTO"], as_index=False)["CARGOS"]
     .sum()
     .rename(columns={"CARGOS": "TOTAL_AREA"})
