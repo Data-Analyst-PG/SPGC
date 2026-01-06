@@ -6,8 +6,7 @@ import numpy as np
 from io import BytesIO
 
 st.set_page_config(page_title="Fuel Solutions Parser", layout="wide")
-
-st.title("Fuel Solutions → 3 Tablas + Comparativo + % Pilot vs Otras + Export Excel")
+st.title("Fuel Solutions → 3 Tablas + Comparativo + % Pilot/FlyingJ vs Otras + Export Excel")
 
 uploaded = st.file_uploader("Sube tu archivo Excel", type=["xlsx"])
 
@@ -34,6 +33,9 @@ def haversine_miles(lat1, lon1, lat2, lon2):
     return 2 * r * math.asin(math.sqrt(a))
 
 def is_pilot_group(text: str) -> bool:
+    """
+    Considera Pilot + Flying J como el mismo grupo.
+    """
     if text is None or pd.isna(text):
         return False
     t = str(text).lower()
@@ -109,50 +111,52 @@ def build_tables(df_filtered: pd.DataFrame):
     return trips_df, purchases_df, onroute_df
 
 # -----------------------------
-# Comparativo: Non-Pilot purchase vs Pilot más cercano en ruta
+# Comparativo: compra NO PilotGroup vs Pilot/FlyingJ más cercano en ruta
 # -----------------------------
 def build_comparativo(purchases_df: pd.DataFrame, onroute_df: pd.DataFrame) -> pd.DataFrame:
     if purchases_df.empty or onroute_df.empty:
         return pd.DataFrame()
 
     # Asegurar columnas esperadas en onroute
-    if not {"Address", "Price", "h_lat", "h_lon", "FSID"}.issubset(onroute_df.columns):
+    needed = {"Address", "Price", "h_lat", "h_lon", "FSID"}
+    if not needed.issubset(set(onroute_df.columns)):
         return pd.DataFrame()
 
-    # Solo estaciones Pilot de Stations On Route
+    # Solo estaciones Pilot/FlyingJ en Stations On Route
     mask = (
         onroute_df["Address"].astype(str).str.contains("Pilot", case=False, na=False)
         | onroute_df["Address"].astype(str).str.contains("Flying J", case=False, na=False)
         | onroute_df["Address"].astype(str).str.contains("FlyingJ", case=False, na=False)
     )
-    stations_pilot = onroute_df[mask].copy()
+    stations_group = onroute_df[mask].copy()
 
-    pilot_group = {fsid: grp.reset_index(drop=True) for fsid, grp in stations_pilot.groupby("FSID")}
+    # Agrupar por FSID para que el comparativo sea dentro del mismo viaje
+    group_by_fsid = {fsid: grp.reset_index(drop=True) for fsid, grp in stations_group.groupby("FSID")}
 
     df = purchases_df.copy()
-   df["is_pilot_purchase"] = df["location"].apply(is_pilot_group)
+    df["is_pilot_group_purchase"] = df["location"].apply(is_pilot_group)
 
-    # Solo compras NO Pilot
-    df = df[~df["is_pilot_purchase"]].copy()
+    # Solo compras NO PilotGroup
+    df = df[~df["is_pilot_group_purchase"]].copy()
     if df.empty:
         return pd.DataFrame()
 
-    def nearest_pilot(row):
+    def nearest_station_in_group(row):
         fsid = row["FSID"]
-        grp = pilot_group.get(fsid)
+        grp = group_by_fsid.get(fsid)
 
         if grp is None or grp.empty:
             return pd.Series({
-                "nearest_pilot_address": np.nan,
-                "nearest_pilot_price": np.nan,
-                "distance_to_nearest_pilot_miles": np.nan
+                "nearest_pilotgroup_address": np.nan,
+                "nearest_pilotgroup_price": np.nan,
+                "distance_to_nearest_pilotgroup_miles": np.nan
             })
 
         if pd.isna(row.get("lat")) or pd.isna(row.get("lng")):
             return pd.Series({
-                "nearest_pilot_address": np.nan,
-                "nearest_pilot_price": np.nan,
-                "distance_to_nearest_pilot_miles": np.nan
+                "nearest_pilotgroup_address": np.nan,
+                "nearest_pilotgroup_price": np.nan,
+                "distance_to_nearest_pilotgroup_miles": np.nan
             })
 
         lat1 = float(row["lat"])
@@ -165,19 +169,19 @@ def build_comparativo(purchases_df: pd.DataFrame, onroute_df: pd.DataFrame) -> p
 
         i = int(dists.argmin())
         return pd.Series({
-            "nearest_pilot_address": grp.loc[i, "Address"],
-            "nearest_pilot_price": grp.loc[i, "Price"],
-            "distance_to_nearest_pilot_miles": float(dists[i]),
+            "nearest_pilotgroup_address": grp.loc[i, "Address"],
+            "nearest_pilotgroup_price": grp.loc[i, "Price"],
+            "distance_to_nearest_pilotgroup_miles": float(dists[i]),
         })
 
-    nearest_cols = df.apply(nearest_pilot, axis=1)
+    nearest_cols = df.apply(nearest_station_in_group, axis=1)
     comp = pd.concat([df.reset_index(drop=True), nearest_cols.reset_index(drop=True)], axis=1)
 
-    # Diferencia de precio
-    comp["price_diff_per_gallon_vs_pilot"] = comp["price"] - comp["nearest_pilot_price"]
+    # Diferencias de precio (tu carga - la mejor alternativa del grupo cercana)
+    comp["price_diff_per_gallon_vs_pilotgroup"] = comp["price"] - comp["nearest_pilotgroup_price"]
 
-    # (Opcional) Diferencia estimada en costo si fuelToPurchase son galones reales
-    comp["est_cost_diff"] = comp["price_diff_per_gallon_vs_pilot"] * comp["fuelToPurchase"]
+    # (Opcional) diferencia estimada en costo si fuelToPurchase son galones reales
+    comp["est_cost_diff"] = comp["price_diff_per_gallon_vs_pilotgroup"] * comp["fuelToPurchase"]
 
     return comp
 
@@ -190,7 +194,6 @@ def to_excel_bytes(trips_df, purchases_df, onroute_df, comparativo_df):
         trips_df.to_excel(writer, index=False, sheet_name="Trip")
         purchases_df.to_excel(writer, index=False, sheet_name="Fuel Purchases")
         onroute_df.to_excel(writer, index=False, sheet_name="Stations On Route")
-        # Hoja nueva
         comparativo_df.to_excel(writer, index=False, sheet_name="Comparativo Non-Pilot")
     output.seek(0)
     return output
@@ -217,19 +220,19 @@ if uploaded:
 
     trips_df, purchases_df, onroute_df = build_tables(filtered)
 
-    # % Pilot vs otras (sobre Fuel Purchases)
+    # % Pilot/FlyingJ vs otras (sobre Fuel Purchases)
     if not purchases_df.empty:
-        purchases_df["is_pilot_purchase"] = purchases_df["location"].apply(is_pilot_group)
+        purchases_df["is_pilot_group_purchase"] = purchases_df["location"].apply(is_pilot_group)
         total = len(purchases_df)
-        pilot_count = int(purchases_df["is_pilot_purchase"].sum())
-        other_count = total - pilot_count
+        group_count = int(purchases_df["is_pilot_group_purchase"].sum())
+        other_count = total - group_count
 
-        pilot_pct = (pilot_count / total) * 100 if total else 0
+        group_pct = (group_count / total) * 100 if total else 0
         other_pct = (other_count / total) * 100 if total else 0
 
         c1, c2, c3 = st.columns(3)
         c1.metric("Cargas (total)", f"{total:,}")
-        c2.metric("Cargas en Pilot", f"{pilot_pct:.1f}%", f"{pilot_count:,}")
+        c2.metric("Cargas Pilot/Flying J", f"{group_pct:.1f}%", f"{group_count:,}")
         c3.metric("Cargas en otras", f"{other_pct:.1f}%", f"{other_count:,}")
     else:
         st.info("No hay compras para calcular porcentajes.")
@@ -246,9 +249,9 @@ if uploaded:
     st.subheader("Tabla 3: Stations On Route (todas las estaciones en ruta)")
     st.dataframe(onroute_df, use_container_width=True)
 
-    st.subheader("Tabla 4: Comparativo Non-Pilot (carga NO Pilot vs Pilot más cercano en ruta)")
+    st.subheader("Tabla 4: Comparativo Non-Pilot (carga NO Pilot/FlyingJ vs opción más cercana Pilot/FlyingJ)")
     if comparativo_df.empty:
-        st.info("No se generó comparativo (o todas las cargas fueron Pilot, o faltan datos).")
+        st.info("No se generó comparativo (o todas las cargas fueron Pilot/FlyingJ, o faltan datos).")
     else:
         st.caption("Distancia calculada en línea recta (haversine).")
         st.dataframe(comparativo_df, use_container_width=True)
