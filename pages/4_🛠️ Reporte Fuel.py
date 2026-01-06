@@ -1,14 +1,19 @@
 import streamlit as st
 import pandas as pd
 import json
+import math
+import numpy as np
 from io import BytesIO
 
 st.set_page_config(page_title="Fuel Solutions Parser", layout="wide")
 
-st.title("Fuel Solutions → 3 Tablas + Filtro Año/Mes + Export Excel")
+st.title("Fuel Solutions → 3 Tablas + Comparativo + % Pilot vs Otras + Export Excel")
 
 uploaded = st.file_uploader("Sube tu archivo Excel", type=["xlsx"])
 
+# -----------------------------
+# Helpers
+# -----------------------------
 def safe_json_loads(x):
     try:
         if pd.isna(x):
@@ -17,6 +22,26 @@ def safe_json_loads(x):
     except Exception:
         return None
 
+def haversine_miles(lat1, lon1, lat2, lon2):
+    """
+    Distancia en línea recta (Haversine) en millas.
+    """
+    r = 3958.7613  # Radio Tierra en millas
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dl = math.radians(lon2 - lon1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dl / 2) ** 2
+    return 2 * r * math.asin(math.sqrt(a))
+
+def is_pilot(text: str) -> bool:
+    if text is None or pd.isna(text):
+        return False
+    # Si quieres extender a "Pilot/Flying J" como marca conjunta, dime.
+    return "pilot" in str(text).lower()
+
+# -----------------------------
+# Parse JSON -> 3 tablas
+# -----------------------------
 def build_tables(df_filtered: pd.DataFrame):
     trips_rows = []
     purchases_rows = []
@@ -83,17 +108,91 @@ def build_tables(df_filtered: pd.DataFrame):
 
     return trips_df, purchases_df, onroute_df
 
-def to_excel_bytes(trips_df, purchases_df, onroute_df):
+# -----------------------------
+# Comparativo: Non-Pilot purchase vs Pilot más cercano en ruta
+# -----------------------------
+def build_comparativo(purchases_df: pd.DataFrame, onroute_df: pd.DataFrame) -> pd.DataFrame:
+    if purchases_df.empty or onroute_df.empty:
+        return pd.DataFrame()
+
+    # Asegurar columnas esperadas en onroute
+    if not {"Address", "Price", "h_lat", "h_lon", "FSID"}.issubset(onroute_df.columns):
+        return pd.DataFrame()
+
+    # Solo estaciones Pilot de Stations On Route
+    stations_pilot = onroute_df[onroute_df["Address"].astype(str).str.contains("Pilot", case=False, na=False)].copy()
+    pilot_group = {fsid: grp.reset_index(drop=True) for fsid, grp in stations_pilot.groupby("FSID")}
+
+    df = purchases_df.copy()
+    df["is_pilot_purchase"] = df["location"].apply(is_pilot)
+
+    # Solo compras NO Pilot
+    df = df[~df["is_pilot_purchase"]].copy()
+    if df.empty:
+        return pd.DataFrame()
+
+    def nearest_pilot(row):
+        fsid = row["FSID"]
+        grp = pilot_group.get(fsid)
+
+        if grp is None or grp.empty:
+            return pd.Series({
+                "nearest_pilot_address": np.nan,
+                "nearest_pilot_price": np.nan,
+                "distance_to_nearest_pilot_miles": np.nan
+            })
+
+        if pd.isna(row.get("lat")) or pd.isna(row.get("lng")):
+            return pd.Series({
+                "nearest_pilot_address": np.nan,
+                "nearest_pilot_price": np.nan,
+                "distance_to_nearest_pilot_miles": np.nan
+            })
+
+        lat1 = float(row["lat"])
+        lon1 = float(row["lng"])
+
+        dists = np.array([
+            haversine_miles(lat1, lon1, float(la), float(lo))
+            for la, lo in zip(grp["h_lat"], grp["h_lon"])
+        ])
+
+        i = int(dists.argmin())
+        return pd.Series({
+            "nearest_pilot_address": grp.loc[i, "Address"],
+            "nearest_pilot_price": grp.loc[i, "Price"],
+            "distance_to_nearest_pilot_miles": float(dists[i]),
+        })
+
+    nearest_cols = df.apply(nearest_pilot, axis=1)
+    comp = pd.concat([df.reset_index(drop=True), nearest_cols.reset_index(drop=True)], axis=1)
+
+    # Diferencia de precio
+    comp["price_diff_per_gallon_vs_pilot"] = comp["price"] - comp["nearest_pilot_price"]
+
+    # (Opcional) Diferencia estimada en costo si fuelToPurchase son galones reales
+    comp["est_cost_diff"] = comp["price_diff_per_gallon_vs_pilot"] * comp["fuelToPurchase"]
+
+    return comp
+
+# -----------------------------
+# Excel export
+# -----------------------------
+def to_excel_bytes(trips_df, purchases_df, onroute_df, comparativo_df):
     output = BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         trips_df.to_excel(writer, index=False, sheet_name="Trip")
         purchases_df.to_excel(writer, index=False, sheet_name="Fuel Purchases")
         onroute_df.to_excel(writer, index=False, sheet_name="Stations On Route")
+        # Hoja nueva
+        comparativo_df.to_excel(writer, index=False, sheet_name="Comparativo Non-Pilot")
     output.seek(0)
     return output
 
+# -----------------------------
+# App flow
+# -----------------------------
 if uploaded:
-    # Lee solo lo que necesitamos para filtrar rápido
     base = pd.read_excel(uploaded, sheet_name="Fuel Solutions", usecols=["FSID", "FSJSON", "FSCreatedAt"])
     base["FSCreatedAt"] = pd.to_datetime(base["FSCreatedAt"], errors="coerce")
 
@@ -112,6 +211,26 @@ if uploaded:
 
     trips_df, purchases_df, onroute_df = build_tables(filtered)
 
+    # % Pilot vs otras (sobre Fuel Purchases)
+    if not purchases_df.empty:
+        purchases_df["is_pilot_purchase"] = purchases_df["location"].apply(is_pilot)
+        total = len(purchases_df)
+        pilot_count = int(purchases_df["is_pilot_purchase"].sum())
+        other_count = total - pilot_count
+
+        pilot_pct = (pilot_count / total) * 100 if total else 0
+        other_pct = (other_count / total) * 100 if total else 0
+
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Cargas (total)", f"{total:,}")
+        c2.metric("Cargas en Pilot", f"{pilot_pct:.1f}%", f"{pilot_count:,}")
+        c3.metric("Cargas en otras", f"{other_pct:.1f}%", f"{other_count:,}")
+    else:
+        st.info("No hay compras para calcular porcentajes.")
+
+    # Comparativo
+    comparativo_df = build_comparativo(purchases_df, onroute_df)
+
     st.subheader("Tabla 1: Trip (1 fila por FSID)")
     st.dataframe(trips_df, use_container_width=True)
 
@@ -121,12 +240,19 @@ if uploaded:
     st.subheader("Tabla 3: Stations On Route (todas las estaciones en ruta)")
     st.dataframe(onroute_df, use_container_width=True)
 
-    excel_bytes = to_excel_bytes(trips_df, purchases_df, onroute_df)
+    st.subheader("Tabla 4: Comparativo Non-Pilot (carga NO Pilot vs Pilot más cercano en ruta)")
+    if comparativo_df.empty:
+        st.info("No se generó comparativo (o todas las cargas fueron Pilot, o faltan datos).")
+    else:
+        st.caption("Distancia calculada en línea recta (haversine).")
+        st.dataframe(comparativo_df, use_container_width=True)
+
+    excel_bytes = to_excel_bytes(trips_df, purchases_df, onroute_df, comparativo_df)
 
     st.download_button(
-        label="⬇️ Descargar Excel (3 hojas)",
+        label="⬇️ Descargar Excel (4 hojas)",
         data=excel_bytes,
-        file_name=f"fuel_solutions_{year}_{month:02d}.xlsx",
+        file_name=f"fuel_solutions_{year}_{month:02d}_con_comparativo.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 else:
