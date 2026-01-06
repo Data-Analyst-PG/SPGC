@@ -33,11 +33,11 @@ def haversine_miles(lat1, lon1, lat2, lon2):
     a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dl / 2) ** 2
     return 2 * r * math.asin(math.sqrt(a))
 
-def is_pilot(text: str) -> bool:
+def is_pilot_group(text: str) -> bool:
     if text is None or pd.isna(text):
         return False
-    # Si quieres extender a "Pilot/Flying J" como marca conjunta, dime.
-    return "pilot" in str(text).lower()
+    t = str(text).lower()
+    return ("pilot" in t) or ("flying j" in t) or ("flyingj" in t)
 
 # -----------------------------
 # Parse JSON -> 3 tablas
@@ -120,11 +120,17 @@ def build_comparativo(purchases_df: pd.DataFrame, onroute_df: pd.DataFrame) -> p
         return pd.DataFrame()
 
     # Solo estaciones Pilot de Stations On Route
-    stations_pilot = onroute_df[onroute_df["Address"].astype(str).str.contains("Pilot", case=False, na=False)].copy()
+    mask = (
+        onroute_df["Address"].astype(str).str.contains("Pilot", case=False, na=False)
+        | onroute_df["Address"].astype(str).str.contains("Flying J", case=False, na=False)
+        | onroute_df["Address"].astype(str).str.contains("FlyingJ", case=False, na=False)
+    )
+    stations_pilot = onroute_df[mask].copy()
+
     pilot_group = {fsid: grp.reset_index(drop=True) for fsid, grp in stations_pilot.groupby("FSID")}
 
     df = purchases_df.copy()
-    df["is_pilot_purchase"] = df["location"].apply(is_pilot)
+   df["is_pilot_purchase"] = df["location"].apply(is_pilot_group)
 
     # Solo compras NO Pilot
     df = df[~df["is_pilot_purchase"]].copy()
@@ -213,7 +219,7 @@ if uploaded:
 
     # % Pilot vs otras (sobre Fuel Purchases)
     if not purchases_df.empty:
-        purchases_df["is_pilot_purchase"] = purchases_df["location"].apply(is_pilot)
+        purchases_df["is_pilot_purchase"] = purchases_df["location"].apply(is_pilot_group)
         total = len(purchases_df)
         pilot_count = int(purchases_df["is_pilot_purchase"].sum())
         other_count = total - pilot_count
