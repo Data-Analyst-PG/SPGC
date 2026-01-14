@@ -12,21 +12,20 @@ url = st.secrets["SUPABASE_URL"]
 key = st.secrets["SUPABASE_KEY"]
 supabase = create_client(url, key)
 
+st.set_page_config(page_title="Distribución CI Clientes", layout="wide")
 st.title("👥 Prorrateo de Costos Indirectos por Cliente")
 
 st.markdown(
     """
 Esta app te ayuda a:
 1. Calcular, a partir de la **DATA detallada**, la tabla de viajes por cliente/año/mes
-   (viajes totales, con remolque, con unidad, millas/kms, tipo de cliente),
-   excluyendo ciertos operadores logísticos (solo aplica donde exista la columna).
+   (viajes totales, con remolque, con unidad, millas/kilómetros, tipo de cliente),
+   excluyendo ciertos operadores logísticos (solo cuando aplique).
 2. Repartir costos **no ligados a la operación** entre viajes con/sin unidad
    (y obtener costos unitarios).
 3. Definir un catálogo de distribución para costos **ligados a la operación**.
 4. Prorratear esos costos entre clientes.
-5. **Asignar los costos indirectos (CI) a nivel viaje**, permitiendo que los
-   viajes de operadores “excluidos” también reciban CI si tienen unidad y distancia
-   (solo aplica donde exista la columna de operador).
+5. **Asignar los costos indirectos (CI) a nivel viaje**.
 """
 )
 
@@ -40,23 +39,22 @@ empresa = st.selectbox("Selecciona la empresa", EMPRESAS, index=0)
 
 def get_empresa_config(nombre_empresa: str):
     """
-    Define reglas por empresa:
+    Config por empresa:
     - columnas base
-    - si existe operador logístico
-    - cómo detectar remolque "válido"
-    - si distancia es millas o kms
+    - si aplica filtro/validación de operador logístico
+    - prefijo de remolque
+    - etiqueta de distancia (Millas/Kilómetros)
     """
     if nombre_empresa == "Lincoln Freight":
         return {
             "candidates_fecha": ["Bill date", "Bill Date", "Fecha", "FECHA", "Date"],
-            "candidates_customer": ["Customer", "Cliente"],
-            "candidates_trip": ["Trip Number", "Trip number", "TripNumber"],
-            "candidates_trailer": ["Trailer", "Remolque"],
-            "candidates_unit": ["Unit", "Unidad"],
+            "candidates_customer": ["Customer", "Cliente", "cliente"],
+            "candidates_trip": ["Trip Number", "Trip number", "TripNumber", "Viaje", "No Viaje", "Folio"],
+            "candidates_trailer": ["Trailer", "Remolque", "remolque"],
+            "candidates_unit": ["Unit", "Unidad", "unidad"],
             "candidates_dist": ["Real Miles", "Real miles", "REAL MILES", "Miles reales", "Real_miles", "Real Mi"],
             "candidates_operador": ["Logistic Operator", "Operador logistico", "Operador logístico"],
-            "usa_operador": True,
-            "trailer_mode": "prefix",
+            "usa_operador": True,          # ✅ Lincoln sí aplica
             "trailer_prefix": "LF",
             "dist_label": "Millas",
         }
@@ -64,47 +62,58 @@ def get_empresa_config(nombre_empresa: str):
     if nombre_empresa == "Set Logis Plus":
         return {
             "candidates_fecha": ["Bill date", "Bill Date", "Fecha", "FECHA", "Date"],
-            "candidates_customer": ["Customer", "Cliente"],
-            "candidates_trip": ["Trip Number", "Trip number", "TripNumber"],
-            "candidates_trailer": ["Trailer", "Remolque"],
-            "candidates_unit": ["Unit", "Unidad"],
+            "candidates_customer": ["Customer", "Cliente", "cliente"],
+            "candidates_trip": ["Trip Number", "Trip number", "TripNumber", "Viaje", "No Viaje", "Folio"],
+            "candidates_trailer": ["Trailer", "Remolque", "remolque"],
+            "candidates_unit": ["Unit", "Unidad", "unidad"],
             "candidates_dist": ["Real Miles", "Real miles", "REAL MILES", "Miles reales", "Real_miles", "Real Mi"],
             "candidates_operador": ["Logistic Operator", "Operador logistico", "Operador logístico"],
-            "usa_operador": True,
-            "trailer_mode": "prefix",
+            "usa_operador": False,         # ✅ Set: NO se hace comprobación por ahora
             "trailer_prefix": "STL",
             "dist_label": "Millas",
         }
 
-    # Picus / Igloo
+    if nombre_empresa == "Picus Carrier":
+        return {
+            "candidates_fecha": ["Fecha", "FECHA", "Bill date", "Bill Date", "Date"],
+            "candidates_customer": ["Cliente", "cliente", "Customer"],
+            "candidates_trip": ["Trip Number", "Trip number", "TripNumber", "Viaje", "No Viaje", "Folio", "Folio Viaje"],
+            "candidates_trailer": ["Remolque", "remolque", "Trailer"],
+            "candidates_unit": ["Unidad", "unidad", "Unit"],
+            "candidates_dist": ["KMS Ruta", "Kms Ruta", "KMS_Ruta", "Kilometros", "Kilómetros", "KM", "KMS"],
+            "candidates_operador": [],
+            "usa_operador": False,
+            "trailer_prefix": "PI",        # ✅ Picus: PI
+            "dist_label": "Kilómetros",
+        }
+
+    # Igloo Carrier
     return {
         "candidates_fecha": ["Fecha", "FECHA", "Bill date", "Bill Date", "Date"],
-        "candidates_customer": ["Cliente", "Customer"],
+        "candidates_customer": ["Cliente", "cliente", "Customer"],
         "candidates_trip": ["Trip Number", "Trip number", "TripNumber", "Viaje", "No Viaje", "Folio", "Folio Viaje"],
-        "candidates_trailer": ["Remolque", "Trailer"],
-        "candidates_unit": ["Unidad", "Unit"],
+        "candidates_trailer": ["Remolque", "remolque", "Trailer"],
+        "candidates_unit": ["Unidad", "unidad", "Unit"],
         "candidates_dist": ["KMS Ruta", "Kms Ruta", "KMS_Ruta", "Kilometros", "Kilómetros", "KM", "KMS"],
-        "candidates_operador": [],  # NO EXISTE
+        "candidates_operador": [],
         "usa_operador": False,
-        "trailer_mode": "nonempty",  # remolque no vacío
-        "trailer_prefix": None,
+        "trailer_prefix": "IGT",          # ✅ Igloo: IGT
         "dist_label": "Kilómetros",
     }
 
 CFG = get_empresa_config(empresa)
+DIST_COL_NAME = CFG["dist_label"]  # "Millas" o "Kilómetros" (se usa en tablas/UI)
 
 # ============================================================
-# Función auxiliar para normalizar tipo_distribucion
+# Auxiliares
 # ============================================================
 def normaliza_tipo_distribucion(valor):
     if isinstance(valor, list):
         return valor[0] if valor else None
-
     if isinstance(valor, str):
         v = valor.strip()
         if not v:
             return None
-
         try:
             parsed = json.loads(v)
             if isinstance(parsed, list) and parsed:
@@ -113,16 +122,11 @@ def normaliza_tipo_distribucion(valor):
                 return parsed
         except Exception:
             pass
-
         v = v.strip("[]{}").strip().strip('"\'')
 
         return v or None
-
     return valor
 
-# ============================================================
-# Función auxiliar para encontrar columnas por candidatos
-# ============================================================
 def find_column(df, candidates):
     norm_map = {str(c).lower().replace(" ", "").replace("_", ""): c for c in df.columns}
     for cand in candidates:
@@ -131,9 +135,6 @@ def find_column(df, candidates):
             return norm_map[key]
     return None
 
-# ============================================================
-# Lista de operadores "excluidos" (solo aplica si existe columna)
-# ============================================================
 OPERADORES_EXCLUIR = {
     "ERICK LARA",
     "JULIETA REYNA",
@@ -147,13 +148,9 @@ OPERADORES_EXCLUIR = {
     "GRISELDA JIMENEZ",
 }
 
-# Helper: bandera de remolque "válido" según empresa
-def build_flag_trailer(series_trailer: pd.Series) -> pd.Series:
-    s = series_trailer.astype(str).str.strip()
-    if CFG["trailer_mode"] == "prefix" and CFG["trailer_prefix"]:
-        return s.str.upper().str.startswith(CFG["trailer_prefix"]).astype(int)
-    # nonempty
-    return (s.notna() & (s != "")).astype(int)
+def build_flag_trailer(series_trailer: pd.Series, prefix: str) -> pd.Series:
+    s = series_trailer.astype(str).str.strip().str.upper()
+    return s.str.startswith(prefix).astype(int)
 
 # ============================================================
 # 1️⃣ CARGA DATA DETALLADA Y TABLA POR CLIENTE
@@ -166,8 +163,6 @@ file_data = st.file_uploader(
     key="data_file",
 )
 
-tabla = None
-
 if file_data:
     try:
         xls = pd.ExcelFile(file_data)
@@ -178,7 +173,6 @@ if file_data:
         st.subheader("Vista previa DATA de viajes")
         st.dataframe(df_data.head(), use_container_width=True)
 
-        # --- Detectar columnas clave (por empresa) ---
         col_fecha = find_column(df_data, CFG["candidates_fecha"])
         col_customer = find_column(df_data, CFG["candidates_customer"])
         col_trip = find_column(df_data, CFG["candidates_trip"])
@@ -191,211 +185,196 @@ if file_data:
             col_logop = find_column(df_data, CFG["candidates_operador"])
 
         faltan_cols = []
-        if col_fecha is None:
-            faltan_cols.append("Fecha")
-        if col_customer is None:
-            faltan_cols.append("Customer/Cliente")
-        if col_trip is None:
-            faltan_cols.append("Trip Number / Viaje")
-        if col_trailer is None:
-            faltan_cols.append("Trailer/Remolque")
-        if col_unit is None:
-            faltan_cols.append("Unit/Unidad")
-        if col_dist is None:
-            faltan_cols.append(CFG["dist_label"])
-        if CFG["usa_operador"] and col_logop is None:
-            faltan_cols.append("Logistic Operator")
+        if col_fecha is None: faltan_cols.append("Fecha")
+        if col_customer is None: faltan_cols.append("Customer/Cliente")
+        if col_trip is None: faltan_cols.append("Trip Number/Viaje")
+        if col_trailer is None: faltan_cols.append("Trailer/Remolque")
+        if col_unit is None: faltan_cols.append("Unit/Unidad")
+        if col_dist is None: faltan_cols.append(DIST_COL_NAME)
+        if CFG["usa_operador"] and col_logop is None: faltan_cols.append("Logistic Operator")
 
         if faltan_cols:
             st.error("No se encontraron las siguientes columnas necesarias en la DATA: " + ", ".join(faltan_cols))
+            st.stop()
+
+        # Normalización base
+        df_data = df_data.copy()
+        df_data[col_fecha] = pd.to_datetime(df_data[col_fecha], errors="coerce")
+        df_data["Año"] = df_data[col_fecha].dt.year
+        df_data["Mes"] = df_data[col_fecha].dt.month
+
+        df_data["_trip"] = df_data[col_trip].astype(str).str.strip()
+        df_data["_flag_trailer"] = build_flag_trailer(df_data[col_trailer], CFG["trailer_prefix"])
+        df_data["_flag_unidad"] = (
+            df_data[col_unit].notna() & (df_data[col_unit].astype(str).str.strip() != "")
+        ).astype(int)
+
+        df_data["_dist"] = pd.to_numeric(df_data[col_dist], errors="coerce").fillna(0.0)
+        df_data["_dist_con_unidad"] = df_data["_dist"] * df_data["_flag_unidad"]
+
+        # Guardar para paso 5
+        st.session_state["df_data_original"] = df_data.copy()
+        st.session_state["empresa_sel"] = empresa
+        st.session_state["cfg_empresa"] = CFG
+        st.session_state["dist_col_name"] = DIST_COL_NAME
+
+        # ----------------------------------
+        # Filtro de operadores SOLO Lincoln (por configuración)
+        # ----------------------------------
+        if CFG["usa_operador"]:
+            logop_upper = df_data[col_logop].astype(str).str.upper().str.strip()
+            mask_log_ok = (logop_upper == "") | (~logop_upper.isin(OPERADORES_EXCLUIR))
+            df_filt = df_data[mask_log_ok].copy()
+            st.write(
+                f"Registros usados para drivers (excluyendo operadores lista): "
+                f"{df_filt.shape[0]} de {df_data.shape[0]}."
+            )
         else:
-            # ----------------------------------
-            # 1) Preparar DATA completa (base CI)
-            # ----------------------------------
-            df_data[col_fecha] = pd.to_datetime(df_data[col_fecha], errors="coerce")
-            df_data["Año"] = df_data[col_fecha].dt.year
-            df_data["Mes"] = df_data[col_fecha].dt.month
+            df_filt = df_data.copy()
+            st.info("No se aplica filtro/comprobación de operadores para esta empresa.")
 
-            df_data["_trip"] = df_data[col_trip].astype(str)
-            df_data["_flag_trailer"] = build_flag_trailer(df_data[col_trailer])
-            df_data["_flag_unidad"] = (
-                df_data[col_unit].notna() & (df_data[col_unit].astype(str).str.strip() != "")
-            ).astype(int)
+        # Selección año/mes (sobre la DATA completa)
+        col1, col2 = st.columns(2)
+        with col1:
+            anios = sorted(df_data["Año"].dropna().unique())
+            anio_sel = st.selectbox("Año", anios)
+        with col2:
+            meses = sorted(df_data.loc[df_data["Año"] == anio_sel, "Mes"].dropna().unique())
+            mes_sel = st.selectbox("Mes (número)", meses)
 
-            df_data["_dist"] = pd.to_numeric(df_data[col_dist], errors="coerce").fillna(0.0)
-            df_data["_dist_con_unidad"] = df_data["_dist"] * df_data["_flag_unidad"]
+        st.session_state["anio_sel"] = int(anio_sel)
+        st.session_state["mes_sel"] = int(mes_sel)
 
-            # Guardar copia para Paso 5
-            st.session_state["df_data_original"] = df_data.copy()
-            st.session_state["empresa_sel"] = empresa
-            st.session_state["cfg_empresa"] = CFG
+        df_data_mes = df_data[(df_data["Año"] == anio_sel) & (df_data["Mes"] == mes_sel)].copy()
+        df_mes_filt = df_filt[(df_filt["Año"] == anio_sel) & (df_filt["Mes"] == mes_sel)].copy()
 
-            # ----------------------------------
-            # 2) Filtro de operadores (solo si existe)
-            #    Esta DATA se usa para la tabla por cliente (drivers)
-            # ----------------------------------
-            if CFG["usa_operador"]:
-                logop_upper = df_data[col_logop].astype(str).str.upper().str.strip()
-                mask_log_ok = (logop_upper == "") | (~logop_upper.isin(OPERADORES_EXCLUIR))
-                df_filt = df_data[mask_log_ok].copy()
+        if df_data_mes.empty:
+            st.warning("No hay registros para ese año/mes en la DATA.")
+            st.stop()
 
-                st.write(
-                    f"Registros usados para drivers (excluyendo operadores lista): "
-                    f"{df_filt.shape[0]} de {df_data.shape[0]}."
+        # Totales base CI (todos los viajes del mes)
+        total_viajes_ci = df_data_mes["_trip"].nunique()
+        total_con_unidad_ci = int(df_data_mes["_flag_unidad"].sum())
+        total_sin_unidad_ci = total_viajes_ci - total_con_unidad_ci
+        total_con_remolque_ci = int(df_data_mes["_flag_trailer"].sum())
+        dist_mes_ci = float(df_data_mes.loc[df_data_mes["_flag_unidad"] == 1, "_dist"].sum())
+
+        pct_con_unidad_ci = total_con_unidad_ci / total_viajes_ci if total_viajes_ci else 0.0
+        pct_sin_unidad_ci = 1.0 - pct_con_unidad_ci if total_viajes_ci else 0.0
+
+        resumen_ci = pd.DataFrame(
+            {
+                "Métrica": [
+                    "Viajes totales (base CI)",
+                    "Viajes con unidad (base CI)",
+                    "Viajes sin unidad (base CI)",
+                    f"Viajes con remolque ({CFG['trailer_prefix']}) (base CI)",
+                    f"{DIST_COL_NAME} con unidad (base CI)",
+                ],
+                "Valor": [
+                    total_viajes_ci,
+                    total_con_unidad_ci,
+                    total_sin_unidad_ci,
+                    total_con_remolque_ci,
+                    dist_mes_ci,
+                ],
+            }
+        )
+
+        st.subheader(f"Totales del mes {anio_sel}-{mes_sel:02d} para CI (TODOS los viajes del mes)")
+        st.dataframe(resumen_ci, use_container_width=True)
+
+        st.write(
+            f"**% viajes con unidad (base CI):** {pct_con_unidad_ci:.4%}   |   "
+            f"**% viajes sin unidad (base CI):** {pct_sin_unidad_ci:.4%}"
+        )
+
+        # Guardar para paso 2
+        st.session_state["pct_con_unidad"] = pct_con_unidad_ci
+        st.session_state["pct_sin_unidad"] = pct_sin_unidad_ci
+        st.session_state["dist_mes"] = dist_mes_ci
+        st.session_state["total_sin_unidad"] = total_sin_unidad_ci
+
+        # Tabla por cliente (drivers)
+        if df_mes_filt.empty:
+            st.warning("Después del filtro (si aplica), no quedan registros para tabla por cliente.")
+        else:
+            tabla_mes = (
+                df_mes_filt.groupby(["Año", "Mes", col_customer], as_index=False)
+                .agg(
+                    Viajes=("_trip", "nunique"),
+                    **{
+                        "Viajes con remolques": ("_flag_trailer", "sum"),
+                        "Viajes con unidad": ("_flag_unidad", "sum"),
+                        DIST_COL_NAME: ("_dist_con_unidad", "sum"),
+                    },
                 )
-            else:
-                df_filt = df_data.copy()
-                st.info("Esta empresa no tiene columna de Operador logístico; no se aplica filtro de operadores.")
+            )
 
-            # ----------------------------------
-            # 3) Selección de año/mes (sobre la DATA COMPLETA)
-            # ----------------------------------
-            col1, col2 = st.columns(2)
-            with col1:
-                anios = sorted(df_data["Año"].dropna().unique())
-                anio_sel = st.selectbox("Año", anios)
-            with col2:
-                meses = sorted(df_data.loc[df_data["Año"] == anio_sel, "Mes"].dropna().unique())
-                mes_sel = st.selectbox("Mes (número)", meses)
+            tabla_mes = tabla_mes.rename(columns={col_customer: "Customer"})
+            tabla_mes["Viajes sin unidad"] = tabla_mes["Viajes"] - tabla_mes["Viajes con unidad"]
 
-            st.session_state["anio_sel"] = int(anio_sel)
-            st.session_state["mes_sel"] = int(mes_sel)
+            tabla_mes["pct_equipo"] = np.where(
+                tabla_mes["Viajes"] > 0,
+                tabla_mes["Viajes con remolques"] / tabla_mes["Viajes"],
+                0.0,
+            )
+            tabla_mes["pct_unidad"] = np.where(
+                tabla_mes["Viajes"] > 0,
+                tabla_mes["Viajes con unidad"] / tabla_mes["Viajes"],
+                0.0,
+            )
 
-            # DATA del mes (BASE CI) -> incluye TODOS los registros
-            df_data_mes = df_data[(df_data["Año"] == anio_sel) & (df_data["Mes"] == mes_sel)].copy()
-
-            # DATA del mes para drivers -> filtrada si aplica operador
-            df_mes_filt = df_filt[(df_filt["Año"] == anio_sel) & (df_filt["Mes"] == mes_sel)].copy()
-
-            if df_data_mes.empty:
-                st.warning("No hay registros para ese año/mes en la DATA.")
-            else:
-                # ----------------------------------
-                # 4) Totales base CI (TODOS los viajes del mes)
-                # ----------------------------------
-                total_viajes_ci = df_data_mes["_trip"].nunique()
-                total_con_unidad_ci = int(df_data_mes["_flag_unidad"].sum())
-                total_sin_unidad_ci = total_viajes_ci - total_con_unidad_ci
-                total_con_remolque_ci = int(df_data_mes["_flag_trailer"].sum())
-                dist_mes_ci = float(df_data_mes.loc[df_data_mes["_flag_unidad"] == 1, "_dist"].sum())
-
-                pct_con_unidad_ci = total_con_unidad_ci / total_viajes_ci if total_viajes_ci else 0.0
-                pct_sin_unidad_ci = 1.0 - pct_con_unidad_ci if total_viajes_ci else 0.0
-
-                resumen_ci = pd.DataFrame(
-                    {
-                        "Métrica": [
-                            "Viajes totales (base CI)",
-                            "Viajes con unidad (base CI)",
-                            "Viajes sin unidad (base CI)",
-                            "Viajes con remolque (base CI)",
-                            f"{CFG['dist_label']} con unidad (base CI)",
-                        ],
-                        "Valor": [
-                            total_viajes_ci,
-                            total_con_unidad_ci,
-                            total_sin_unidad_ci,
-                            total_con_remolque_ci,
-                            dist_mes_ci,
-                        ],
-                    }
-                )
-
-                st.subheader(f"Totales del mes {anio_sel}-{mes_sel:02d} para CI (TODOS los viajes del mes)")
-                st.dataframe(resumen_ci, use_container_width=True)
-
-                st.write(
-                    f"**% viajes con unidad (base CI):** {pct_con_unidad_ci:.4%}   |   "
-                    f"**% viajes sin unidad (base CI):** {pct_sin_unidad_ci:.4%}"
-                )
-
-                # Guardar para Paso 2
-                st.session_state["pct_con_unidad"] = pct_con_unidad_ci
-                st.session_state["pct_sin_unidad"] = pct_sin_unidad_ci
-                st.session_state["dist_mes"] = dist_mes_ci
-                st.session_state["total_sin_unidad"] = total_sin_unidad_ci
-
-                # ----------------------------------
-                # 5) Tabla por cliente / tipo_cliente (drivers)
-                # ----------------------------------
-                if df_mes_filt.empty:
-                    st.warning("Después de filtrar (si aplica), no quedan registros para tabla por cliente.")
+            def nivel_volumen(viajes):
+                if viajes > 100:
+                    return "ALTO"
+                elif 20 <= viajes <= 99:
+                    return "MEDIO"
                 else:
-                    tabla_mes = (
-                        df_mes_filt.groupby(["Año", "Mes", col_customer], as_index=False)
-                        .agg(
-                            Viajes=("_trip", "nunique"),
-                            **{
-                                "Viajes con remolques": ("_flag_trailer", "sum"),
-                                "Viajes con unidad": ("_flag_unidad", "sum"),
-                                "Millas": ("_dist_con_unidad", "sum"),  # mantenemos nombre por compatibilidad
-                            },
-                        )
-                    )
+                    return "BAJO"
 
-                    tabla_mes = tabla_mes.rename(columns={col_customer: "Customer"})
-                    tabla_mes["Viajes sin unidad"] = tabla_mes["Viajes"] - tabla_mes["Viajes con unidad"]
+            def nivel_equipo(pct_eq):
+                if pct_eq > 0.60:
+                    return "ALTO"
+                elif 0.20 <= pct_eq <= 0.59:
+                    return "MEDIO"
+                else:
+                    return "BAJO"
 
-                    tabla_mes["pct_equipo"] = np.where(
-                        tabla_mes["Viajes"] > 0,
-                        tabla_mes["Viajes con remolques"] / tabla_mes["Viajes"],
-                        0.0,
-                    )
-                    tabla_mes["pct_unidad"] = np.where(
-                        tabla_mes["Viajes"] > 0,
-                        tabla_mes["Viajes con unidad"] / tabla_mes["Viajes"],
-                        0.0,
-                    )
+            tabla_mes["nivel_volumen"] = tabla_mes["Viajes"].apply(nivel_volumen)
+            tabla_mes["nivel_equipo"] = tabla_mes["pct_equipo"].apply(nivel_equipo)
 
-                    def nivel_volumen(viajes):
-                        if viajes > 100:
-                            return "ALTO"
-                        elif 20 <= viajes <= 99:
-                            return "MEDIO"
-                        else:
-                            return "BAJO"
+            def tipo_cliente_row(row):
+                viajes = row["Viajes"]
+                pct_eq = row["pct_equipo"]
+                if viajes > 100 and pct_eq > 0.60:
+                    return "INTENSIVO"
+                elif viajes > 100 and pct_eq <= 0.60:
+                    return "OPERATIVO"
+                elif viajes <= 100 and pct_eq > 0.60:
+                    return "PATRIMONIAL"
+                else:
+                    return "ESPORADICO"
 
-                    def nivel_equipo(pct_eq):
-                        if pct_eq > 0.60:
-                            return "ALTO"
-                        elif 0.20 <= pct_eq <= 0.59:
-                            return "MEDIO"
-                        else:
-                            return "BAJO"
+            tabla_mes["Tipo cliente"] = tabla_mes.apply(tipo_cliente_row, axis=1)
 
-                    tabla_mes["nivel_volumen"] = tabla_mes["Viajes"].apply(nivel_volumen)
-                    tabla_mes["nivel_equipo"] = tabla_mes["pct_equipo"].apply(nivel_equipo)
+            st.subheader(f"Tabla por cliente / tipo_cliente ({anio_sel}-{mes_sel:02d})")
+            st.dataframe(tabla_mes, use_container_width=True)
 
-                    def tipo_cliente_row(row):
-                        viajes = row["Viajes"]
-                        pct_eq = row["pct_equipo"]
-                        if viajes > 100 and pct_eq > 0.60:
-                            return "INTENSIVO"
-                        elif viajes > 100 and pct_eq <= 0.60:
-                            return "OPERATIVO"
-                        elif viajes <= 100 and pct_eq > 0.60:
-                            return "PATRIMONIAL"
-                        else:
-                            return "ESPORADICO"
+            agg_cols = ["Viajes", "Viajes con remolques", "Viajes con unidad", "Viajes sin unidad"]
+            por_tipo = tabla_mes.groupby("Tipo cliente")[agg_cols].sum().reset_index()
+            for col in agg_cols:
+                total_col = por_tipo[col].sum()
+                por_tipo[f"%{col}"] = (por_tipo[col] / total_col if total_col else 0.0)
 
-                    tabla_mes["Tipo cliente"] = tabla_mes.apply(tipo_cliente_row, axis=1)
+            st.subheader("Porcentajes por Tipo de cliente (drivers)")
+            st.dataframe(por_tipo, use_container_width=True)
 
-                    st.subheader(f"Tabla por cliente / tipo_cliente ({anio_sel}-{mes_sel:02d})")
-                    st.dataframe(tabla_mes, use_container_width=True)
-
-                    agg_cols = ["Viajes", "Viajes con remolques", "Viajes con unidad", "Viajes sin unidad"]
-                    por_tipo = tabla_mes.groupby("Tipo cliente")[agg_cols].sum().reset_index()
-                    for col in agg_cols:
-                        total_col = por_tipo[col].sum()
-                        por_tipo[f"%{col}"] = (por_tipo[col] / total_col if total_col else 0.0)
-
-                    st.subheader("Porcentajes por Tipo de cliente (drivers)")
-                    st.dataframe(por_tipo, use_container_width=True)
-
-                    st.session_state["df_mes_clientes"] = tabla_mes
+            st.session_state["df_mes_clientes"] = tabla_mes
 
     except Exception as e:
         st.error(f"Error leyendo la DATA: {e}")
+        st.stop()
 
 # ============================================================
 # 2️⃣ COSTOS NO LIGADOS A LA OPERACIÓN
@@ -459,9 +438,9 @@ else:
 
             st.subheader("Costos unitarios derivados (informativos)")
             if costo_x_dist is not None:
-                st.write(f"**Costo por {CFG['dist_label'].lower()} (viajes con unidad):** ${costo_x_dist:,.6f}")
+                st.write(f"**Costo por {DIST_COL_NAME.lower()} (viajes con unidad):** ${costo_x_dist:,.6f}")
             else:
-                st.write(f"No se pudo calcular costo por {CFG['dist_label'].lower()} (falta total).")
+                st.write(f"No se pudo calcular costo por {DIST_COL_NAME.lower()} (falta total).")
 
             if costo_x_viaje_sin is not None:
                 st.write(f"**Costo por viaje sin unidad:** ${costo_x_viaje_sin:,.6f}")
@@ -484,7 +463,7 @@ tipos_distribucion = [
     "Volumen Viajes",
     "Viajes con Remolque",
     "Viajes con unidad",
-    "Millas",  # nombre se conserva por compatibilidad (en Picus/Igloo representará KMS)
+    DIST_COL_NAME,  # ✅ Millas o Kilómetros según empresa
 ]
 
 # Cargar catálogo existente filtrado por empresa
@@ -505,8 +484,6 @@ file_op = st.file_uploader(
     type=["xlsx"],
     key="op_file",
 )
-
-df_op_mes = None
 
 if file_op:
     try:
@@ -544,7 +521,6 @@ if file_op:
         if not catalogo_existente.empty:
             catalogo_existente = catalogo_existente.rename(columns={"concepto": "Concepto", "tipo_distribucion": "Tipo distribución"})
             catalogo_existente["Tipo distribución"] = catalogo_existente["Tipo distribución"].apply(normaliza_tipo_distribucion)
-
             merged_cat = conceptos.merge(catalogo_existente, on="Concepto", how="left")
         else:
             merged_cat = conceptos.copy()
@@ -600,20 +576,12 @@ st.header("4️⃣ Prorrateo de costos ligados a operación por cliente")
 costo_x_dist_info = st.session_state.get("costo_no_op_x_dist")
 costo_x_viaje_sin_info = st.session_state.get("costo_no_op_x_viaje_sin")
 
-if (costo_x_dist_info is not None) or (costo_x_viaje_sin_info is not None):
-    st.subheader("Recordatorio costos unitarios no operativos (informativos)")
-    if costo_x_dist_info is not None:
-        st.write(f"**Costo por {CFG['dist_label'].lower()} (viajes con unidad):** ${costo_x_dist_info:,.6f}")
-    if costo_x_viaje_sin_info is not None:
-        st.write(f"**Costo por viaje sin unidad:** ${costo_x_viaje_sin_info:,.6f}")
-
 if ("df_mes_clientes" not in st.session_state) or ("df_costos_op_mes" not in st.session_state):
     st.info("Necesitas completar los pasos 1 y 3 para poder prorratear.")
 else:
     df_mes_clientes = st.session_state["df_mes_clientes"].copy()
     df_op_mes = st.session_state["df_costos_op_mes"].copy()
 
-    # Releer catálogo desde Supabase filtrado por empresa
     data_cat = (
         supabase.table("catalogo_costos_clientes")
         .select("*")
@@ -639,11 +607,11 @@ else:
                 "Volumen Viajes": "Viajes",
                 "Viajes con Remolque": "Viajes con remolques",
                 "Viajes con unidad": "Viajes con unidad",
-                "Millas": "Millas",  # representa millas o kms según empresa
+                DIST_COL_NAME: DIST_COL_NAME,  # ✅ Millas o Kilómetros
             }
 
             base_clientes = df_mes_clientes.groupby(["Customer", "Tipo cliente"], as_index=False).agg(
-                {"Viajes": "sum", "Viajes con remolques": "sum", "Viajes con unidad": "sum", "Millas": "sum"}
+                {"Viajes": "sum", "Viajes con remolques": "sum", "Viajes con unidad": "sum", DIST_COL_NAME: "sum"}
             )
 
             asignaciones = []
@@ -698,28 +666,16 @@ else:
                 st.session_state["conceptos_tipos"] = df_op_mes[["Concepto", "Tipo distribución"]]
                 st.session_state["pivot_clientes_ci"] = pivot_clientes
 
-                def to_excel_bytes(df1, df2, df_unitarios=None):
+                def to_excel_bytes(df1, df2):
                     buffer = BytesIO()
                     with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
                         df1.to_excel(writer, index=False, sheet_name="Detalle_asignaciones")
                         df2.to_excel(writer, index=False, sheet_name="Totales_por_cliente")
-                        if df_unitarios is not None:
-                            df_unitarios.to_excel(writer, index=False, sheet_name="Costos_no_operativos_unit")
                     return buffer.getvalue()
-
-                df_unitarios = None
-                if (costo_x_dist_info is not None) or (costo_x_viaje_sin_info is not None):
-                    filas_unit = []
-                    if costo_x_dist_info is not None:
-                        filas_unit.append({"Concepto": f"Costo por {CFG['dist_label'].lower()} (viajes con unidad)", "Valor": costo_x_dist_info})
-                    if costo_x_viaje_sin_info is not None:
-                        filas_unit.append({"Concepto": "Costo por viaje sin unidad", "Valor": costo_x_viaje_sin_info})
-                    if filas_unit:
-                        df_unitarios = pd.DataFrame(filas_unit)
 
                 st.download_button(
                     "📥 Descargar resultados (Excel clientes)",
-                    data=to_excel_bytes(asignaciones_df, pivot_clientes, df_unitarios),
+                    data=to_excel_bytes(asignaciones_df, pivot_clientes),
                     file_name="prorrateo_costos_clientes.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 )
@@ -731,7 +687,7 @@ st.header("5️⃣ Asignación de CI a nivel viaje")
 
 faltan_requisitos = []
 if st.session_state.get("costo_no_op_x_dist") is None:
-    faltan_requisitos.append("Costo unitario por distancia (paso 2).")
+    faltan_requisitos.append(f"Costo unitario por {DIST_COL_NAME.lower()} (paso 2).")
 if st.session_state.get("costo_no_op_x_viaje_sin") is None:
     faltan_requisitos.append("Costo unitario por viaje sin unidad (paso 2).")
 if "asignaciones_df" not in st.session_state or "conceptos_tipos" not in st.session_state:
@@ -770,18 +726,18 @@ else:
                 df_trips = pd.read_excel(xls_trips, sheet_name=hoja_trips)
                 df_trips.columns = df_trips.columns.astype(str)
 
-            # Columnas por empresa
             col_fecha = find_column(df_trips, CFG["candidates_fecha"])
             col_customer = find_column(df_trips, CFG["candidates_customer"])
             col_trip = find_column(df_trips, CFG["candidates_trip"])
             col_unit = find_column(df_trips, CFG["candidates_unit"])
             col_trailer = find_column(df_trips, CFG["candidates_trailer"])
             col_dist = find_column(df_trips, CFG["candidates_dist"])
+
             col_operador = None
             if CFG["usa_operador"]:
                 col_operador = find_column(df_trips, CFG["candidates_operador"])
 
-            # Filtro por año/mes si hay fecha y selección previa
+            # filtro por mes si aplica
             if col_fecha is not None and "anio_sel" in st.session_state and "mes_sel" in st.session_state:
                 df_trips[col_fecha] = pd.to_datetime(df_trips[col_fecha], errors="coerce")
                 anio_sel = int(st.session_state["anio_sel"])
@@ -795,154 +751,145 @@ else:
             st.subheader("Vista previa viajes (después de filtro por mes)")
             st.dataframe(df_trips.head(), use_container_width=True)
 
-            # Validar columnas mínimas
+            # Validaciones mínimas
             columnas_faltan = []
             if col_customer is None: columnas_faltan.append("Customer/Cliente")
             if col_trip is None: columnas_faltan.append("Trip Number/Viaje")
             if col_unit is None: columnas_faltan.append("Unit/Unidad")
             if col_trailer is None: columnas_faltan.append("Trailer/Remolque")
-            if col_dist is None: columnas_faltan.append(CFG["dist_label"])
+            if col_dist is None: columnas_faltan.append(DIST_COL_NAME)
             if CFG["usa_operador"] and col_operador is None:
                 columnas_faltan.append("Operador logístico")
 
             if columnas_faltan:
                 st.error("No se encontraron columnas necesarias en viajes: " + ", ".join(columnas_faltan))
+                st.stop()
+
+            df_trips_work = df_trips.copy()
+
+            # Operadores excluidos: SOLO Lincoln
+            if CFG["usa_operador"]:
+                op_upper = df_trips_work[col_operador].astype(str).str.upper().str.strip()
+                mask_excl = op_upper.isin(OPERADORES_EXCLUIR)
+                df_trips_work["Excluido_por_operador"] = mask_excl
+                st.write(
+                    f"Viajes con operador en lista de 'excluidos': {int(mask_excl.sum())} "
+                    f"de {len(df_trips_work)} (sí pueden recibir CI si tienen unidad y distancia)."
+                )
             else:
-                df_trips_work = df_trips.copy()
+                df_trips_work["Excluido_por_operador"] = False
 
-                df_trips_work[col_customer] = df_trips_work[col_customer].astype(str)
-                df_trips_work[col_trip] = df_trips_work[col_trip].astype(str)
+            # CI NO OPERATIVOS a nivel viaje
+            costo_x_dist = float(st.session_state["costo_no_op_x_dist"])
+            costo_x_viaje_sin = float(st.session_state["costo_no_op_x_viaje_sin"])
 
-                # Operadores excluidos (solo si existe)
-                if CFG["usa_operador"]:
-                    op_upper = df_trips_work[col_operador].astype(str).str.upper().str.strip()
-                    mask_excl = op_upper.isin(OPERADORES_EXCLUIR)
-                    df_trips_work["Excluido_por_operador"] = mask_excl
-                    st.write(
-                        f"Viajes con operador en lista de 'excluidos': {int(mask_excl.sum())} "
-                        f"de {len(df_trips_work)} (sí pueden recibir CI si tienen unidad y distancia)."
-                    )
+            has_unit = df_trips_work[col_unit].notna() & (df_trips_work[col_unit].astype(str).str.strip() != "")
+            dist = pd.to_numeric(df_trips_work[col_dist], errors="coerce").fillna(0.0)
+
+            ci_no_op = np.zeros(len(df_trips_work), dtype=float)
+
+            idx_con_unidad = (has_unit & (dist > 0)).to_numpy()
+            ci_no_op[idx_con_unidad] = costo_x_dist * dist.to_numpy()[idx_con_unidad]
+
+            idx_sin_unidad = (~has_unit).to_numpy()
+            ci_no_op[idx_sin_unidad] = costo_x_viaje_sin
+
+            df_trips_work["CI_no_operativo"] = ci_no_op
+
+            # CI LIGADOS A OPERACIÓN a nivel viaje
+            asignaciones_df = st.session_state["asignaciones_df"].copy()
+            conceptos_tipos = st.session_state["conceptos_tipos"].copy()
+
+            tot_client_conc = (
+                asignaciones_df.groupby(["Customer", "Concepto"], as_index=False)["Costo asignado"].sum()
+            )
+            tot_client_conc = tot_client_conc.merge(conceptos_tipos, on="Concepto", how="left")
+
+            df_trips_work["CI_op_ligado_operacion"] = 0.0
+
+            trailer_flag_trip = build_flag_trailer(df_trips_work[col_trailer], CFG["trailer_prefix"]).astype(bool)
+
+            def asignar_op_por_subgrupo(df, mask_aplica, has_unit_s, dist_s, col_dest, monto):
+                if monto == 0:
+                    return
+                mask_aplica = mask_aplica.fillna(False)
+                n_total = int(mask_aplica.sum())
+                if n_total == 0:
+                    return
+
+                n_u = int((mask_aplica & has_unit_s).sum())
+                mask_su = mask_aplica & (~has_unit_s)
+                n_su = int(mask_su.sum())
+
+                pct_u = n_u / n_total
+                pct_su = n_su / n_total
+
+                bolsa_u = monto * pct_u
+                bolsa_su = monto * pct_su
+
+                if n_su > 0 and bolsa_su != 0:
+                    df.loc[mask_su, col_dest] += (bolsa_su / n_su)
+
+                mask_u_dist = mask_aplica & has_unit_s & (dist_s > 0)
+                total_dist_u = float(dist_s.where(mask_u_dist, 0).sum())
+
+                if total_dist_u > 0 and bolsa_u != 0:
+                    costo_x = bolsa_u / total_dist_u
+                    df.loc[mask_u_dist, col_dest] += costo_x * dist_s.where(mask_u_dist, 0)
                 else:
-                    df_trips_work["Excluido_por_operador"] = False
-                    st.info("Esta empresa no tiene columna de operador; no se marca/filtra por operadores.")
+                    mask_u_fallback = mask_aplica & has_unit_s
+                    n_u_fallback = int(mask_u_fallback.sum())
+                    if n_u_fallback > 0 and bolsa_u != 0:
+                        df.loc[mask_u_fallback, col_dest] += (bolsa_u / n_u_fallback)
 
-                # CI NO OPERATIVOS a nivel viaje
-                costo_x_dist = st.session_state["costo_no_op_x_dist"]
-                costo_x_viaje_sin = st.session_state["costo_no_op_x_viaje_sin"]
+            for _, row in tot_client_conc.iterrows():
+                cliente = str(row["Customer"])
+                tipo_dist = row.get("Tipo distribución", "Volumen Viajes")
+                monto_cliente = float(row["Costo asignado"]) if pd.notna(row["Costo asignado"]) else 0.0
+                if monto_cliente == 0:
+                    continue
 
-                has_unit = df_trips_work[col_unit].notna() & (df_trips_work[col_unit].astype(str).str.strip() != "")
-                dist = pd.to_numeric(df_trips_work[col_dist], errors="coerce").fillna(0.0)
+                mask_base = df_trips_work[col_customer].astype(str) == cliente
+                if not mask_base.any():
+                    continue
 
-                ci_no_op = np.zeros(len(df_trips_work), dtype=float)
+                if tipo_dist == "Volumen Viajes":
+                    mask_aplica = mask_base
+                elif tipo_dist == "Viajes con unidad":
+                    mask_aplica = mask_base & has_unit
+                elif tipo_dist == "Viajes con Remolque":
+                    mask_aplica = mask_base & trailer_flag_trip
+                elif tipo_dist == DIST_COL_NAME:
+                    mask_aplica = mask_base & has_unit
+                else:
+                    mask_aplica = mask_base
 
-                idx_con_unidad = (has_unit & (dist > 0)).to_numpy()
-                ci_no_op[idx_con_unidad] = float(costo_x_dist) * dist.to_numpy()[idx_con_unidad]
-
-                idx_sin_unidad = (~has_unit).to_numpy()
-                ci_no_op[idx_sin_unidad] = float(costo_x_viaje_sin)
-
-                df_trips_work["CI_no_operativo"] = ci_no_op
-
-                st.subheader("Resumen de CI no operativo a nivel viaje")
-                st.write(df_trips_work["CI_no_operativo"].describe(percentiles=[0.25, 0.5, 0.75]))
-
-                # CI LIGADOS A OPERACIÓN a nivel viaje
-                st.subheader("Asignación de CI ligados a la operación a nivel viaje")
-
-                asignaciones_df = st.session_state["asignaciones_df"].copy()
-                conceptos_tipos = st.session_state["conceptos_tipos"].copy()
-
-                tot_client_conc = (
-                    asignaciones_df.groupby(["Customer", "Concepto"], as_index=False)["Costo asignado"].sum()
+                asignar_op_por_subgrupo(
+                    df=df_trips_work,
+                    mask_aplica=mask_aplica,
+                    has_unit_s=has_unit,
+                    dist_s=dist,
+                    col_dest="CI_op_ligado_operacion",
+                    monto=monto_cliente,
                 )
-                tot_client_conc = tot_client_conc.merge(conceptos_tipos, on="Concepto", how="left")
 
-                df_trips_work["CI_op_ligado_operacion"] = 0.0
+            df_trips_work["CI_total"] = df_trips_work["CI_no_operativo"] + df_trips_work["CI_op_ligado_operacion"]
 
-                trailer_flag_trip = build_flag_trailer(df_trips_work[col_trailer]).astype(bool)
+            st.subheader("Vista previa con CI asignado")
+            st.dataframe(df_trips_work.head(), use_container_width=True)
 
-                def asignar_op_por_subgrupo(df, mask_aplica, has_unit_s, dist_s, col_dest, monto):
-                    if monto == 0:
-                        return
-                    mask_aplica = mask_aplica.fillna(False)
-                    n_total = int(mask_aplica.sum())
-                    if n_total == 0:
-                        return
+            def trips_to_excel_bytes(df):
+                buffer = BytesIO()
+                with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
+                    df.to_excel(writer, index=False, sheet_name="CI_por_viaje")
+                return buffer.getvalue()
 
-                    n_u = int((mask_aplica & has_unit_s).sum())
-                    mask_su = mask_aplica & (~has_unit_s)
-                    n_su = int(mask_su.sum())
-
-                    pct_u = n_u / n_total
-                    pct_su = n_su / n_total
-
-                    bolsa_u = monto * pct_u
-                    bolsa_su = monto * pct_su
-
-                    if n_su > 0 and bolsa_su != 0:
-                        df.loc[mask_su, col_dest] += (bolsa_su / n_su)
-
-                    mask_u_dist = mask_aplica & has_unit_s & (dist_s > 0)
-                    total_dist_u = float(dist_s.where(mask_u_dist, 0).sum())
-
-                    if total_dist_u > 0 and bolsa_u != 0:
-                        costo_x = bolsa_u / total_dist_u
-                        df.loc[mask_u_dist, col_dest] += costo_x * dist_s.where(mask_u_dist, 0)
-                    else:
-                        mask_u_fallback = mask_aplica & has_unit_s
-                        n_u_fallback = int(mask_u_fallback.sum())
-                        if n_u_fallback > 0 and bolsa_u != 0:
-                            df.loc[mask_u_fallback, col_dest] += (bolsa_u / n_u_fallback)
-
-                for _, row in tot_client_conc.iterrows():
-                    cliente = str(row["Customer"])
-                    tipo_dist = row.get("Tipo distribución", "Volumen Viajes")
-                    monto_cliente = float(row["Costo asignado"]) if pd.notna(row["Costo asignado"]) else 0.0
-
-                    if monto_cliente == 0:
-                        continue
-
-                    mask_base = df_trips_work[col_customer].astype(str) == cliente
-                    if not mask_base.any():
-                        continue
-
-                    if tipo_dist == "Volumen Viajes":
-                        mask_aplica = mask_base
-                    elif tipo_dist == "Viajes con unidad":
-                        mask_aplica = mask_base & has_unit
-                    elif tipo_dist == "Viajes con Remolque":
-                        mask_aplica = mask_base & trailer_flag_trip
-                    elif tipo_dist == "Millas":
-                        mask_aplica = mask_base & has_unit
-                    else:
-                        mask_aplica = mask_base
-
-                    asignar_op_por_subgrupo(
-                        df=df_trips_work,
-                        mask_aplica=mask_aplica,
-                        has_unit_s=has_unit,
-                        dist_s=dist,
-                        col_dest="CI_op_ligado_operacion",
-                        monto=monto_cliente,
-                    )
-
-                df_trips_work["CI_total"] = df_trips_work["CI_no_operativo"] + df_trips_work["CI_op_ligado_operacion"]
-
-                st.subheader("Vista previa con CI asignado")
-                st.dataframe(df_trips_work.head(), use_container_width=True)
-
-                def trips_to_excel_bytes(df):
-                    buffer = BytesIO()
-                    with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
-                        df.to_excel(writer, index=False, sheet_name="CI_por_viaje")
-                    return buffer.getvalue()
-
-                st.download_button(
-                    "📥 Descargar viajes con CI asignado (Excel)",
-                    data=trips_to_excel_bytes(df_trips_work),
-                    file_name="viajes_con_CI_asignado.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                )
+            st.download_button(
+                "📥 Descargar viajes con CI asignado (Excel)",
+                data=trips_to_excel_bytes(df_trips_work),
+                file_name="viajes_con_CI_asignado.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
 
         except Exception as e:
             st.error(f"Error procesando la base de viajes detallados: {e}")
