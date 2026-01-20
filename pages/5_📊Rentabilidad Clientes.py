@@ -325,50 +325,8 @@ if file_data:
                 0.0,
             )
 
-            def nivel_volumen(viajes):
-                if viajes > 100:
-                    return "ALTO"
-                elif 20 <= viajes <= 99:
-                    return "MEDIO"
-                else:
-                    return "BAJO"
-
-            def nivel_equipo(pct_eq):
-                if pct_eq > 0.60:
-                    return "ALTO"
-                elif 0.20 <= pct_eq <= 0.59:
-                    return "MEDIO"
-                else:
-                    return "BAJO"
-
-            tabla_mes["nivel_volumen"] = tabla_mes["Viajes"].apply(nivel_volumen)
-            tabla_mes["nivel_equipo"] = tabla_mes["pct_equipo"].apply(nivel_equipo)
-
-            def tipo_cliente_row(row):
-                viajes = row["Viajes"]
-                pct_eq = row["pct_equipo"]
-                if viajes > 100 and pct_eq > 0.60:
-                    return "INTENSIVO"
-                elif viajes > 100 and pct_eq <= 0.60:
-                    return "OPERATIVO"
-                elif viajes <= 100 and pct_eq > 0.60:
-                    return "PATRIMONIAL"
-                else:
-                    return "ESPORADICO"
-
-            tabla_mes["Tipo cliente"] = tabla_mes.apply(tipo_cliente_row, axis=1)
-
-            st.subheader(f"Tabla por cliente / tipo_cliente ({anio_sel}-{mes_sel:02d})")
+            st.subheader(f"Tabla por cliente ({anio_sel}-{mes_sel:02d})")
             st.dataframe(tabla_mes, use_container_width=True)
-
-            agg_cols = ["Viajes", "Viajes con remolques", "Viajes con unidad", "Viajes sin unidad"]
-            por_tipo = tabla_mes.groupby("Tipo cliente")[agg_cols].sum().reset_index()
-            for col in agg_cols:
-                total_col = por_tipo[col].sum()
-                por_tipo[f"%{col}"] = (por_tipo[col] / total_col if total_col else 0.0)
-
-            st.subheader("Porcentajes por Tipo de cliente (drivers)")
-            st.dataframe(por_tipo, use_container_width=True)
 
             st.session_state["df_mes_clientes"] = tabla_mes
 
@@ -610,7 +568,7 @@ else:
                 DIST_COL_NAME: DIST_COL_NAME,  # ✅ Millas o Kilómetros
             }
 
-            base_clientes = df_mes_clientes.groupby(["Customer", "Tipo cliente"], as_index=False).agg(
+            base_clientes = df_mes_clientes.groupby(["Customer"], as_index=False).agg(
                 {"Viajes": "sum", "Viajes con remolques": "sum", "Viajes con unidad": "sum", DIST_COL_NAME: "sum"}
             )
 
@@ -625,7 +583,7 @@ else:
                     st.warning(f"Tipo '{tipo_dist}' requiere columna '{col_driver}', no existe. Se omite {concepto}.")
                     continue
 
-                df_driver = base_clientes[["Customer", "Tipo cliente", col_driver]].copy()
+                df_driver = base_clientes[["Customer", col_driver]].copy()
                 total_driver = df_driver[col_driver].sum()
 
                 if total_driver == 0:
@@ -648,7 +606,7 @@ else:
 
                 pivot_clientes = (
                     asignaciones_df.pivot_table(
-                        index=["Customer", "Tipo cliente"],
+                        index=["Customer"],
                         columns="Concepto",
                         values="Costo asignado",
                         aggfunc="sum",
@@ -657,7 +615,7 @@ else:
                     .reset_index()
                 )
 
-                pivot_clientes["Total costos ligados op"] = pivot_clientes.drop(columns=["Customer", "Tipo cliente"]).sum(axis=1)
+                pivot_clientes["Total costos ligados op"] = pivot_clientes.drop(columns=["Customer"]).sum(axis=1)
 
                 st.subheader("Totales por cliente (solo costos ligados a la operación)")
                 st.dataframe(pivot_clientes, use_container_width=True)
