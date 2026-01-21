@@ -18,7 +18,7 @@ st.markdown(
     """
 Esta app te ayuda a:
 1. Calcular, a partir de la **DATA detallada**, la tabla de viajes por cliente/año/mes
-   (viajes totales, con remolque, con unidad, millas, tipo de cliente),
+   (viajes totales, con remolque, con unidad, millas),
    excluyendo ciertos operadores logísticos.
 2. Repartir costos **no ligados a la operación** entre viajes con/sin unidad
    (y obtener costos unitarios).
@@ -327,65 +327,11 @@ if file_data:
                         0.0,
                     )
 
-                    def nivel_volumen(viajes):
-                        if viajes > 100:
-                            return "ALTO"
-                        elif 20 <= viajes <= 99:
-                            return "MEDIO"
-                        else:
-                            return "BAJO"
-
-                    def nivel_equipo(pct_eq):
-                        if pct_eq > 0.60:
-                            return "ALTO"
-                        elif 0.20 <= pct_eq <= 0.59:
-                            return "MEDIO"
-                        else:
-                            return "BAJO"
-
-                    tabla_mes["nivel_volumen"] = tabla_mes["Viajes"].apply(nivel_volumen)
-                    tabla_mes["nivel_equipo"] = tabla_mes["pct_equipo"].apply(nivel_equipo)
-
-                    def tipo_cliente_row(row):
-                        viajes = row["Viajes"]
-                        pct_eq = row["pct_equipo"]
-                        if viajes > 100 and pct_eq > 0.60:
-                            return "INTENSIVO"
-                        elif viajes > 100 and pct_eq <= 0.60:
-                            return "OPERATIVO"
-                        elif viajes <= 100 and pct_eq > 0.60:
-                            return "PATRIMONIAL"
-                        else:
-                            return "ESPORADICO"
-
-                    tabla_mes["Tipo cliente"] = tabla_mes.apply(tipo_cliente_row, axis=1)
-
                     st.subheader(
-                        f"Tabla por cliente / tipo_cliente "
+                        f"Tabla por cliente"
                         f"(DATA filtrada por operadores, {anio_sel}-{mes_sel:02d})"
                     )
                     st.dataframe(tabla_mes, use_container_width=True)
-
-                    # Porcentajes por Tipo cliente (solo informativo)
-                    agg_cols = [
-                        "Viajes",
-                        "Viajes con remolques",
-                        "Viajes con unidad",
-                        "Viajes sin unidad",
-                    ]
-                    por_tipo = (
-                        tabla_mes.groupby("Tipo cliente")[agg_cols]
-                        .sum()
-                        .reset_index()
-                    )
-                    for col in agg_cols:
-                        total_col = por_tipo[col].sum()
-                        por_tipo[f"%{col}"] = (
-                            por_tipo[col] / total_col if total_col else 0.0
-                        )
-
-                    st.subheader("Porcentajes por Tipo de cliente (drivers filtrados)")
-                    st.dataframe(por_tipo, use_container_width=True)
 
                     # Guardar para pasos 3 y 4
                     st.session_state["df_mes_clientes"] = tabla_mes
@@ -726,7 +672,7 @@ else:
 
             # Preparar tabla base por cliente
             base_clientes = df_mes_clientes.groupby(
-                ["Customer", "Tipo cliente"], as_index=False
+                ["Customer"], as_index=False
             ).agg(
                 {
                     "Viajes": "sum",
@@ -752,7 +698,7 @@ else:
                     )
                     continue
 
-                df_driver = base_clientes[["Customer", "Tipo cliente", col_driver]].copy()
+                df_driver = base_clientes[["Customer", col_driver]].copy()
                 total_driver = df_driver[col_driver].sum()
 
                 if total_driver == 0:
@@ -780,7 +726,7 @@ else:
                 # Pivot para ver totales por cliente
                 pivot_clientes = (
                     asignaciones_df.pivot_table(
-                        index=["Customer", "Tipo cliente"],
+                        index=["Customer"],
                         columns="Concepto",
                         values="Costo asignado",
                         aggfunc="sum",
@@ -791,7 +737,7 @@ else:
 
                 pivot_clientes["Total costos ligados op"] = (
                     pivot_clientes.drop(
-                        columns=["Customer", "Tipo cliente"]
+                        columns=["Customer"]
                     ).sum(axis=1)
                 )
 
