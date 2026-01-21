@@ -511,16 +511,16 @@ if file_op:
                 registros = []
                 for _, row in edited_cat.iterrows():
                     if pd.notna(row["Tipo distribución"]):
+                        concepto = str(row["Concepto"]).strip()
                         tipo = normaliza_tipo_distribucion(row["Tipo distribución"])
-                        tipo = tipo.strip() if isinstance(tipo, str) else tipo
-                        registros.append(
-                            {
-                                "empresa": empresa,
-                                "concepto": row["Concepto"],
-                                "tipo_distribucion": tipo,
-                                "empresa,concepto": f"{empresa},{row['Concepto']}",
-                            }
-                        )
+
+                        registros.append({
+                            "empresa": empresa,                      # ✅ automático
+                            "concepto": concepto,                    # ✅ de la fila
+                            "tipo_distribucion": str(tipo).strip(),  # ✅ limpio
+                            "empresa,concepto": f"{empresa},{concepto}",  # ✅ automático (tu columna extra)
+                        })
+
                 if registros:
                     supabase.table("catalogo_costos_clientes").upsert(
                         registros,
