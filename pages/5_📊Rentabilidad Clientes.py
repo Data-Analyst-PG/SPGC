@@ -480,6 +480,12 @@ if file_op:
             catalogo_existente = catalogo_existente.rename(columns={"concepto": "Concepto", "tipo_distribucion": "Tipo distribución"})
             catalogo_existente["Tipo distribución"] = catalogo_existente["Tipo distribución"].apply(normaliza_tipo_distribucion)
             merged_cat = conceptos.merge(catalogo_existente, on="Concepto", how="left")
+            # ✅ Mostrar SOLO lo que el usuario debe editar
+            keep_cols = ["Concepto", "Tipo distribución"]
+            for c in list(merged_cat.columns):
+                if c not in keep_cols:
+                    merged_cat.drop(columns=[c], inplace=True)
+
         else:
             merged_cat = conceptos.copy()
             merged_cat["Tipo distribución"] = None
@@ -510,6 +516,7 @@ if file_op:
                                 "empresa": empresa,
                                 "concepto": row["Concepto"],
                                 "tipo_distribucion": str(row["Tipo distribución"]),
+                                "empresa_concepto": f"{empresa},{row['Concepto']}",
                             }
                         )
                 if registros:
