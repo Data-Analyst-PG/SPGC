@@ -518,7 +518,7 @@ if file_op:
                                 "empresa": empresa,
                                 "concepto": row["Concepto"],
                                 "tipo_distribucion": tipo,
-                                "empresa_concepto": f"{empresa},{row['Concepto']}",
+                                "empresa,concepto": f"{empresa},{row['Concepto']}",
                             }
                         )
                 if registros:
