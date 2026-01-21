@@ -511,11 +511,13 @@ if file_op:
                 registros = []
                 for _, row in edited_cat.iterrows():
                     if pd.notna(row["Tipo distribución"]):
+                        tipo = normaliza_tipo_distribucion(row["Tipo distribución"])
+                        tipo = tipo.strip() if isinstance(tipo, str) else tipo
                         registros.append(
                             {
                                 "empresa": empresa,
                                 "concepto": row["Concepto"],
-                                "tipo_distribucion": str(row["Tipo distribución"]),
+                                "tipo_distribucion": tipo,
                                 "empresa_concepto": f"{empresa},{row['Concepto']}",
                             }
                         )
