@@ -1,312 +1,245 @@
 # app.py
 import re
 import io
-from dataclasses import asdict, dataclass
-from typing import List, Dict, Any, Tuple
-
 import pandas as pd
+import pdfplumber
 import streamlit as st
 
-# Recomendado: pip install pdfplumber openpyxl
-import pdfplumber
+# =========================
+# CONFIG
+# =========================
+st.set_page_config(page_title="Lector PDF → Excel", layout="wide")
 
+OUTPUT_COLS = [
+    "EMPRESA", "#FACTURA", "UUID", "FECHA FACTURA",
+    "FECHA Y HR SERVICIO", "#UNIDAD",
+    "ACTIVIDAD", "CANTIDAD", "SUBTOTAL", "IVA", "TOTAL"
+]
 
-# ----------------------------
-# Helpers
-# ----------------------------
-def norm_num(s: str) -> float:
-    """Convierte '3,650.00' -> 3650.0"""
-    s = (s or "").strip().replace(",", "")
-    try:
-        return float(s)
-    except ValueError:
-        return float("nan")
+# =========================
+# HELPERS
+# =========================
+def norm_num(s):
+    if not s:
+        return 0.0
+    return float(str(s).replace(",", "").replace("$", "").strip())
 
+def extract_pages_text(pdf_bytes):
+    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+        return [(p.extract_text() or "") for p in pdf.pages]
 
-def find_first(pattern: str, text: str, flags=0) -> str:
+def find_first(pattern, text, flags=0):
     m = re.search(pattern, text, flags)
     return m.group(1).strip() if m else ""
 
+def clean_k9_service_dt(raw):
+    if not raw:
+        return ""
+    raw = re.sub(r"HORA", "", raw, flags=re.I)
+    raw = re.sub(r"(\d{1,2})\.(\d{2})", r"\1:\2", raw)
+    raw = re.sub(r"\s+", " ", raw).strip()
+    raw = raw.replace("AM", "am").replace("PM", "pm")
+    return raw
 
-def extract_pages_text(pdf_bytes: bytes) -> List[str]:
-    pages = []
-    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-        for p in pdf.pages:
-            pages.append(p.extract_text() or "")
-    return pages
+def build_df(rows, iva_rate):
+    out = []
+    for r in rows:
+        subtotal = norm_num(r.get("SUBTOTAL"))
+        iva = round(subtotal * iva_rate, 2)
+        total = round(subtotal + iva, 2)
 
+        out.append({
+            "EMPRESA": r.get("EMPRESA", ""),
+            "#FACTURA": r.get("#FACTURA", ""),
+            "UUID": r.get("UUID", ""),
+            "FECHA FACTURA": r.get("FECHA FACTURA", ""),
+            "FECHA Y HR SERVICIO": r.get("FECHA Y HR SERVICIO", ""),
+            "#UNIDAD": r.get("#UNIDAD", ""),
+            "ACTIVIDAD": r.get("ACTIVIDAD", ""),
+            "CANTIDAD": r.get("CANTIDAD", 1),
+            "SUBTOTAL": round(subtotal, 2),
+            "IVA": iva,
+            "TOTAL": total
+        })
 
-def to_excel_bytes(header: Dict[str, Any], items: List[Dict[str, Any]]) -> bytes:
-    header_df = pd.DataFrame([header])
-    items_df = pd.DataFrame(items)
+    return pd.DataFrame(out, columns=OUTPUT_COLS)
 
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        header_df.to_excel(writer, index=False, sheet_name="Encabezado")
-        items_df.to_excel(writer, index=False, sheet_name="Conceptos")
-    return output.getvalue()
-
-
-# ----------------------------
-# Parsers
-# ----------------------------
-def parse_royan(pdf_bytes: bytes) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
-    """
-    ROYAN (según tu ejemplo): encabezado + hoja 2 con partidas tipo:
-    '517.24 Actividad REVISAR MASAS ACT'
-    y en hoja 1 los totales: Subtotal / Iva 16 % / Ret 4 % / Total
-    """
+# =========================
+# PARSER K9
+# =========================
+def parse_k9(pdf_bytes):
     pages = extract_pages_text(pdf_bytes)
     full = "\n".join(pages)
 
-    # Encabezado (heurístico basado en el PDF ejemplo)
-    folio = find_first(r"\b(ROYAN-\d+)\b", full)
-    fecha = find_first(r"\b(\d{2}/\d{2}/\d{4})\b", full)
+    empresa = find_first(r"NOMBRE COMERCIAL:\s*(.+)", full)
+    uuid = find_first(r"UUID\s*\n\s*([0-9a-fA-F-]{36})", full)
+    fecha_factura = find_first(
+        r"(\d{2}/\d{2}/\d{4}\s+\d{1,2}:\d{2}\s*[ap]\.m\.)",
+        full, re.I
+    )
 
-    cliente = find_first(r"\n([A-ZÁÉÍÓÚÑ ]{5,})\n[A-Z0-9]{12,13}\n", full)  # nombre antes de RFC
-    rfc_cliente = find_first(r"\n([A-Z0-9]{12,13})\n", full)
+    comentarios = find_first(r"Comentarios:\s*(.+)", full)
 
-    # Totales (en tu ejemplo salen como líneas con $)
-    subtotal = find_first(r"\$(\d[\d,]*\.\d{2})\s*\n\$(\d[\d,]*\.\d{2})\s*\n\$\.*0*\.?0*\s*\n\$(\d[\d,]*\.\d{2})", full)
-    # Lo anterior puede fallar si cambia el orden; entonces buscamos por etiquetas:
-    subtotal2 = find_first(r"\n\$(\d[\d,]*\.\d{2})\s*\n\$(\d[\d,]*\.\d{2})", full)
+    factura = find_first(r"ORDEN\s+(K9\s*\d+)", comentarios, re.I)
 
-    sub = ""
-    iva = ""
-    ret = ""
-    total = ""
+    # unidad = lo que va después de la primera palabra
+    unidad = ""
+    m = re.search(r"^\s*\w+\s+([A-Z0-9\-]+)", comentarios)
+    if m:
+        unidad = m.group(1)
 
-    # Método robusto por “bloque” de etiquetas
-    # (En el ejemplo: $27,867.06 / $4,458.73 / $.00 / $32,325.79)
-    money = re.findall(r"\$(\d[\d,]*\.\d{2}|\.\d{2})", full)
-    # Tomamos los últimos 4 importes como subtotal/iva/ret/total si existen
-    if len(money) >= 4:
-        sub, iva, ret, total = money[-4], money[-3], money[-2], money[-1]
+    servicio_raw = find_first(r"SERVICIO REALIZADO\s+(.+)$", comentarios, re.I)
+    servicio = clean_k9_service_dt(servicio_raw)
 
     header = {
-        "proveedor_formato": "ROYAN",
-        "folio": folio,
-        "fecha": fecha,
-        "cliente": cliente,
-        "rfc_cliente": rfc_cliente,
-        "subtotal": norm_num(sub),
-        "iva": norm_num(iva),
-        "retencion": norm_num(ret),
-        "total": norm_num(total),
+        "EMPRESA": empresa,
+        "#FACTURA": factura,
+        "UUID": uuid,
+        "FECHA FACTURA": fecha_factura,
+        "FECHA Y HR SERVICIO": servicio,
+        "#UNIDAD": unidad
     }
 
-    # Partidas: normalmente vienen en hoja 2
-    items: List[Dict[str, Any]] = []
-    for page_text in pages:
-        for line in (page_text or "").splitlines():
-            line = line.strip()
-
-            # patrón típico hoja 2: "517.24 Actividad REVISAR MASAS ACT"
-            m = re.match(r"^(?P<importe>[\d,]+\.\d{2})\s+Actividad\s+(?P<desc>.+?)\s+ACT$", line)
-            if m:
-                items.append(
-                    {
-                        "clave": "",
-                        "unidad": "ACT",
-                        "cantidad": 1,
-                        "descripcion": m.group("desc").strip(),
-                        "precio_unitario": norm_num(m.group("importe")),
-                        "importe": norm_num(m.group("importe")),
-                        "pagina_origen": "detalle",
-                    }
-                )
-
-    # Si no encontró partidas hoja 2, intenta capturar la partida “principal” de hoja 1
-    if not items:
-        # ejemplo hoja 1: "E48 78181500 ... $27,867.06 ... $27,867.06"
-        for line in full.splitlines():
-            if "78181500" in line and "$" in line:
-                # capturamos algo básico
-                items.append(
-                    {
-                        "clave": "78181500",
-                        "unidad": "E48",
-                        "cantidad": 1,
-                        "descripcion": re.sub(r"\s+", " ", re.sub(r"\$.*", "", line)).strip(),
-                        "precio_unitario": float("nan"),
-                        "importe": float("nan"),
-                        "pagina_origen": "resumen",
-                    }
-                )
-
-    return header, items
-
-
-def parse_k9(pdf_bytes: bytes) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
-    """
-    K9 (según tu ejemplo): encabezado con FACTURA A000..., fecha,
-    y tabla con líneas tipo:
-    '78181507 REPARACION LLANTA POS 5 SERVICIO 1 450.00 450.00'
-    """
-    pages = extract_pages_text(pdf_bytes)
-    full = "\n".join(pages)
-
-    factura = find_first(r"\b(A\d{10})\b", full)  # A0000006866
-    # fecha/hora: "05/02/2026 10:37 a.m." aparece 2 veces en tu ejemplo
-    fecha = find_first(r"\b(\d{2}/\d{2}/\d{4}\s+\d{1,2}:\d{2}\s*[ap]\.m\.)\b", full, flags=re.IGNORECASE)
-    rfc_emisor = find_first(r"\bR\.F\.C\.\s*([A-Z0-9]{12,13})\b", full)
-    vendedor_a = find_first(r"VENDIDO A:\s*(.+?)\n", full)
-
-    # Totales (en el ejemplo: Subtotal 3,650.00 / IVA 292.00 / Total 3,942.00)
-    # Ojo: el texto trae "Total Retencion Subtotal IVA( 8 %)" en distinto orden.
-    total = find_first(r"\bTotal\s*\n?\s*([\d,]+\.\d{2})", full)
-    subtotal = find_first(r"\bSubtotal\s*\n?\s*([\d,]+\.\d{2})", full)
-    iva = find_first(r"\bIVA\(\s*8\s*%\)\s*\n?\s*([\d,]+\.\d{2})", full)
-    ret = find_first(r"\bRetencion\s*\n?\s*([\d,]+\.\d{2})", full)
-
-    header = {
-        "proveedor_formato": "K9",
-        "factura": factura,
-        "fecha": fecha,
-        "vendedor_a": vendedor_a,
-        "rfc_emisor": rfc_emisor,
-        "subtotal": norm_num(subtotal),
-        "iva": norm_num(iva),
-        "retencion": norm_num(ret),
-        "total": norm_num(total),
-    }
-
-    # Parseo de conceptos (líneas con clave de 8 dígitos)
-    items: List[Dict[str, Any]] = []
-
-    # Algunas descripciones se parten en varias líneas; hacemos un “acumulador”
+    items = []
     pending_desc = ""
-    pending_clave = ""
-    pending_unidad = ""
+    pending = False
 
     for line in full.splitlines():
         s = re.sub(r"\s+", " ", line.strip())
         if not s:
             continue
 
-        # Línea completa típica:
-        # 78181507 CALIBRADO ... SERVICIO 8 100.00 800.00
         m = re.match(
-            r"^(?P<clave>\d{8})\s+(?P<desc>.+?)\s+(?P<unidad>[A-ZÁÉÍÓÚÑ]+)\s+(?P<cant>[\d,]+)\s+(?P<precio>[\d,]+\.\d{2})\s+(?P<importe>[\d,]+\.\d{2})$",
-            s,
-            flags=re.IGNORECASE,
+            r"^\d{8}\s+(.+?)\s+SERVICIO\S*\s+(\d+)\s+[\d,]+\.\d{2}\s+([\d,]+\.\d{2})$",
+            s, re.I
         )
         if m:
-            items.append(
-                {
-                    "clave": m.group("clave"),
-                    "unidad": m.group("unidad").upper(),
-                    "cantidad": int(m.group("cant").replace(",", "")),
-                    "descripcion": m.group("desc").strip(),
-                    "precio_unitario": norm_num(m.group("precio")),
-                    "importe": norm_num(m.group("importe")),
-                }
-            )
-            pending_desc = ""
-            pending_clave = ""
-            pending_unidad = ""
+            items.append({
+                "ACTIVIDAD": m.group(1).strip(),
+                "CANTIDAD": int(m.group(2)),
+                "SUBTOTAL": norm_num(m.group(3))
+            })
+            pending = False
             continue
 
-        # Si inicia con clave pero NO trae montos, acumulamos descripción
-        m2 = re.match(r"^(?P<clave>\d{8})\s+(?P<rest>.+)$", s)
-        if m2:
-            pending_clave = m2.group("clave")
-            pending_desc = m2.group("rest")
-            pending_unidad = ""
-            continue
-
-        # Si estamos acumulando, puede venir línea que termina con "... SERVICIO 1 1200.00 1200.00"
-        if pending_clave:
-            m3 = re.match(
-                r"^(?P<desc2>.+?)\s+(?P<unidad>[A-ZÁÉÍÓÚÑ]+)\s+(?P<cant>[\d,]+)\s+(?P<precio>[\d,]+\.\d{2})\s+(?P<importe>[\d,]+\.\d{2})$",
-                s,
-                flags=re.IGNORECASE,
-            )
-            if m3:
-                full_desc = (pending_desc + " " + m3.group("desc2")).strip()
-                items.append(
-                    {
-                        "clave": pending_clave,
-                        "unidad": m3.group("unidad").upper(),
-                        "cantidad": int(m3.group("cant").replace(",", "")),
-                        "descripcion": full_desc,
-                        "precio_unitario": norm_num(m3.group("precio")),
-                        "importe": norm_num(m3.group("importe")),
-                    }
-                )
-                pending_desc = ""
-                pending_clave = ""
-                pending_unidad = ""
-            else:
-                # sigue siendo parte de la descripción
-                pending_desc = (pending_desc + " " + s).strip()
+        if pending:
+            pending_desc += " " + s
+        elif re.match(r"^\d{8}\s+", s):
+            pending_desc = s
+            pending = True
 
     return header, items
 
+# =========================
+# PARSER ROYAN
+# =========================
+def parse_royan(pdf_bytes):
+    pages = extract_pages_text(pdf_bytes)
+    full = "\n".join(pages)
 
-# ----------------------------
-# Streamlit UI
-# ----------------------------
-st.set_page_config(page_title="Lector PDF → Excel (K9 / ROYAN)", layout="centered")
-st.title("Lector de facturas PDF → Excel")
-st.caption("Elige el formato, sube el PDF y descarga el Excel.")
+    header = {
+        "EMPRESA": find_first(r"Cliente:\s*\n?([A-Z0-9 ]+)", full),
+        "#FACTURA": find_first(r"(ROYAN-\d+)", full),
+        "UUID": find_first(r"([0-9a-f]{8}-[0-9a-f\-]{27})", full, re.I),
+        "FECHA FACTURA": find_first(r"(\d{2}/\d{2}/\d{4})", full),
+        "FECHA Y HR SERVICIO": "",
+        "#UNIDAD": find_first(r"Caja:\s*([A-Z0-9\-]+)", full)
+    }
 
-formato = st.selectbox("Selecciona el formato de factura", ["ROYAN", "K9"])
+    items = []
+    for page in pages:
+        for line in page.splitlines():
+            m = re.match(
+                r"([\d,]+\.\d{2})\s+Actividad\s+(.+?)\s+ACT",
+                line.strip(), re.I
+            )
+            if m:
+                items.append({
+                    "ACTIVIDAD": m.group(2).strip(),
+                    "CANTIDAD": 1,
+                    "SUBTOTAL": norm_num(m.group(1))
+                })
 
-pdf_file = st.file_uploader("Sube tu factura en PDF", type=["pdf"])
+    return header, items
 
-col1, col2 = st.columns(2)
-with col1:
-    procesar = st.button("Procesar")
-with col2:
-    autodetect = st.checkbox("Autodetectar formato (si falla, usa el selector)", value=True)
+# =========================
+# PARSER WASH N CROSS
+# =========================
+def parse_wash(pdf_bytes):
+    pages = extract_pages_text(pdf_bytes)
+    full = "\n".join(pages)
 
-if procesar:
-    if not pdf_file:
-        st.error("Primero sube un PDF.")
-        st.stop()
-
-    pdf_bytes = pdf_file.read()
-
-    # Autodetección básica por keywords (puedes ampliarla)
-    if autodetect:
-        pages = extract_pages_text(pdf_bytes)
-        full = "\n".join(pages)
-        if "ROYAN-" in full:
-            formato_final = "ROYAN"
-        elif "K9" in full or "A000" in full or "FACTURA" in full:
-            formato_final = "K9"
-        else:
-            formato_final = formato  # fallback
-    else:
-        formato_final = formato
-
-    try:
-        if formato_final == "ROYAN":
-            header, items = parse_royan(pdf_bytes)
-        else:
-            header, items = parse_k9(pdf_bytes)
-
-        if not items:
-            st.warning("No se encontraron conceptos/partidas. El PDF podría ser escaneado o cambió el formato.")
-        else:
-            st.success(f"Listo: {len(items)} partidas encontradas ({formato_final}).")
-
-        st.subheader("Encabezado detectado")
-        st.dataframe(pd.DataFrame([header]), use_container_width=True)
-
-        st.subheader("Conceptos / partidas")
-        st.dataframe(pd.DataFrame(items), use_container_width=True)
-
-        excel_bytes = to_excel_bytes(header, items)
-        out_name = f"{formato_final}_{pdf_file.name.replace('.pdf','')}.xlsx"
-        st.download_button(
-            "Descargar Excel",
-            data=excel_bytes,
-            file_name=out_name,
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    header = {
+        "EMPRESA": find_first(r"\n(PICUS)\n", full),
+        "#FACTURA": find_first(r"SERIE Y FOLIO\s+([A-Z0-9\-]+)", full),
+        "UUID": find_first(r"UUID\)\s*\n([0-9A-F-]{36})", full, re.I),
+        "FECHA FACTURA": find_first(
+            r"FECHA DE EMISION\s+(\d{2}/\d{2}/\d{4}\s+\d{2}:\d{2}:\d{2})",
+            full
         )
+    }
 
-    except Exception as e:
-        st.error(f"Error procesando el PDF: {e}")
-        st.info("Tip: si el PDF es una imagen escaneada, hay que añadir OCR (pytesseract) o usar otro extractor.")
+    items = []
+    for line in full.splitlines():
+        s = re.sub(r"\s+", " ", line.strip())
+        m = re.match(
+            r"^(\d+).+?\d{8}\s+(.+?)\s+\d+\s+([A-Z0-9\- ]+)\s+(\d{4}-\d{2}-\d{2}).+?([\d,]+\.\d{2})$",
+            s
+        )
+        if m:
+            items.append({
+                "EMPRESA": header["EMPRESA"],
+                "#FACTURA": header["#FACTURA"],
+                "UUID": header["UUID"],
+                "FECHA FACTURA": header["FECHA FACTURA"],
+                "FECHA Y HR SERVICIO": m.group(4),
+                "#UNIDAD": m.group(3),
+                "ACTIVIDAD": m.group(2),
+                "CANTIDAD": int(m.group(1)),
+                "SUBTOTAL": norm_num(m.group(5))
+            })
+
+    return header, items
+
+# =========================
+# STREAMLIT UI
+# =========================
+st.title("📄 Lector de Facturas PDF → Excel")
+
+formato = st.selectbox(
+    "Selecciona el formato",
+    ["K9", "ROYAN", "WASH N CROSS"]
+)
+
+pdf = st.file_uploader("Sube la factura PDF", type="pdf")
+
+if st.button("Procesar") and pdf:
+    pdf_bytes = pdf.read()
+
+    if formato == "K9":
+        header, items = parse_k9(pdf_bytes)
+        rows = [{**header, **i} for i in items]
+        df = build_df(rows, 0.08)
+
+    elif formato == "ROYAN":
+        header, items = parse_royan(pdf_bytes)
+        rows = [{**header, **i} for i in items]
+        df = build_df(rows, 0.16)
+
+    else:
+        header, items = parse_wash(pdf_bytes)
+        df = build_df(items, 0.08)
+
+    st.success(f"Listo: {len(df)} registros")
+    st.dataframe(df, use_container_width=True)
+
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name="FACTURAS")
+
+    st.download_button(
+        "⬇️ Descargar Excel",
+        data=output.getvalue(),
+        file_name=f"{formato}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
