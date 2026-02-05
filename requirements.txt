@@ -12,3 +12,4 @@ pyxlsb
 beautifulsoup4
 lxml
 html5lib
+pdfplumber
