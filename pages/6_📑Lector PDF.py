@@ -118,6 +118,20 @@ def parse_k9(pdf_bytes: bytes) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
         full, flags=re.I
     )
 
+    # Fallback: a veces viene como "Fecha Expedición"
+    if not fecha_factura:
+        fecha_factura = find_first(
+            r"Fecha\s*Expedici[oó]n:?\s*\n?\s*(\d{2}/\d{2}/\d{4}\s+\d{1,2}:\d{2}\s*[ap]\.m\.)",
+            full, flags=re.I
+        )
+    
+    # Fallback final: cualquier fecha-hora con a.m./p.m.
+    if not fecha_factura:
+        fecha_factura = find_first(
+            r"(\d{2}/\d{2}/\d{4}\s+\d{1,2}:\d{2}\s*[ap]\.m\.)",
+            full, flags=re.I
+        )
+
     comentarios = find_first(r"Comentarios:\s*(.+)", full)
 
     # #FACTURA: ORDEN K9 6738
