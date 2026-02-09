@@ -42,7 +42,9 @@ def norm_money(s: str) -> float:
 
 
 def clean_k9_service_dt(raw: str) -> str:
-    # "04-02-2026 HORA 10.31 AM" -> "04-02-2026 10:31 am"
+    """
+    '04-02-2026 HORA 10.31 AM' -> '04-02-2026 10:31 am'
+    """
     if not raw:
         return ""
     raw = re.sub(r"\bHORA\b", "", raw, flags=re.I).strip()
@@ -53,47 +55,53 @@ def clean_k9_service_dt(raw: str) -> str:
 
 
 def autodetect_format(full_text: str) -> str:
+    """
+    Autodetect robusto (sin depender de acentos ni saltos exactos).
+    """
     t = full_text.upper()
 
+    # ANA CECILIA / CFDI impreso típico (LINCOLN, etc.)
+    # Normalmente contiene: "NOMBRE RECEPTOR:" y "CODIGO POSTAL, FECHA Y HORA DE EMISION:"
+    if "NOMBRE RECEPTOR:" in t and "CODIGO POSTAL" in t and "HORA" in t and "EMISION" in t:
+        return "ANA_CECILIA"
+
     # WASH N CROSS
-    if "WASH N CROSS" in t or "SERIE Y FOLIO" in t and "FOLIO FISCAL (UUID" in t:
+    if "WASH N CROSS" in t or ("SERIE Y FOLIO" in t and "FOLIO FISCAL (UUID" in t):
         return "WASH"
 
     # ROYAN
     if "ROYAN-" in t and "TIPO:" in t and "CLIENTE:" in t:
         return "ROYAN"
-    
-    # ANA CECILIA / LINCOLN (CFDI impreso típico)
-    if "NOMBRE EMISOR:" in t and "ANA CECILIA LOPEZ GALVAN" in t:
-        return "ANA_CECILIA"
-        
-    # (alternativa más general si luego cambia el emisor)
-    if "NOMBRE RECEPTOR:" in t and "CÓDIGO POSTAL, FECHA Y HORA DE\nEMISIÓN:" in t:
-        return "ANA_CECILIA"
 
     # K9
-    if "K9" in t and "COMENTARIOS:" in t and "UUID" in t:
+    if "COMENTARIOS:" in t and "UUID" in t and "FACTURA" in t:
         return "K9"
 
-    # fallback heuristics
+    # fallbacks
     if "ROYAN-" in t:
         return "ROYAN"
-    if "WNC" in t or "FOLIO FISCAL (UUID" in t:
+    if "FOLIO FISCAL (UUID" in t and "SERIE Y FOLIO" in t:
         return "WASH"
     return "K9"
 
 
 def build_df(rows: List[Dict[str, Any]], iva_rate: float) -> pd.DataFrame:
+    """
+    - Si la fila ya trae IVA numérico (ej. ANA CECILIA), se respeta.
+    - Si no trae IVA, se calcula con iva_rate.
+    """
     out = []
     for r in rows:
         subtotal = float(r.get("SUBTOTAL", 0) or 0)
 
-        # Si el parser ya trae IVA numérico, úsalo; si no, calcúlalo
-        iva_val = r.get("IVA", None)
-        if iva_val is None or iva_val == "" or (isinstance(iva_val, float) and pd.isna(iva_val)):
+        iva_in = r.get("IVA", None)
+        if iva_in is None or iva_in == "":
             iva = round(subtotal * iva_rate, 2)
         else:
-            iva = round(float(iva_val), 2)
+            try:
+                iva = round(float(iva_in), 2)
+            except Exception:
+                iva = round(subtotal * iva_rate, 2)
 
         total = round(subtotal + iva, 2)
 
@@ -125,22 +133,18 @@ def parse_k9(pdf_bytes: bytes) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
     empresa = find_first(r"NOMBRE COMERCIAL:\s*(.+)", full)
 
     # UUID (debajo de "UUID")
-    uuid = find_first(r"\bUUID\s*\n\s*([0-9a-fA-F-]{36})", full)
+    uuid = find_first(r"\bUUID\s*\n\s*([0-9a-fA-F-]{36})", full, flags=re.I)
 
-    # FECHA FACTURA (debajo de TEL)
+    # FECHA FACTURA (debajo de TEL) robusto
     fecha_factura = find_first(
-        r"\b(\d{2}/\d{2}/\d{4}\s+\d{1,2}:\d{2}\s*[ap]\.m\.)\b",
+        r"TEL\.?\s*\n\s*(\d{2}/\d{2}/\d{4}\s+\d{1,2}:\d{2}\s*[ap]\.m\.)",
         full, flags=re.I
     )
-
-    # Fallback: a veces viene como "Fecha Expedición"
     if not fecha_factura:
         fecha_factura = find_first(
             r"Fecha\s*Expedici[oó]n:?\s*\n?\s*(\d{2}/\d{2}/\d{4}\s+\d{1,2}:\d{2}\s*[ap]\.m\.)",
             full, flags=re.I
         )
-    
-    # Fallback final: cualquier fecha-hora con a.m./p.m.
     if not fecha_factura:
         fecha_factura = find_first(
             r"(\d{2}/\d{2}/\d{4}\s+\d{1,2}:\d{2}\s*[ap]\.m\.)",
@@ -152,8 +156,7 @@ def parse_k9(pdf_bytes: bytes) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
     # #FACTURA: ORDEN K9 6738
     factura = find_first(r"\bORDEN\s+(K9\s*\d+)\b", comentarios, flags=re.I).upper().replace("  ", " ")
 
-    # #UNIDAD: lo que va después de la primer palabra (CAJA / CAMIÓN / TRACTOR / etc.)
-    # Ej: "CAJA SET-33 ORDEN..." -> SET-33
+    # #UNIDAD: token después de la primera palabra (CAJA/CAMION/TRACTOR/etc.)
     unidad = ""
     m = re.search(r"^\s*([A-ZÁÉÍÓÚÑ]+)\s+([A-Z0-9\-]+)\b", comentarios.strip(), flags=re.I)
     if m:
@@ -172,31 +175,21 @@ def parse_k9(pdf_bytes: bytes) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
         "#UNIDAD": unidad,
     }
 
-    # === Tabla de conceptos (con soporte multilínea) ===
-    # Estrategia:
-    # - Si una línea termina con "... <precio> <importe>" la cerramos
-    # - Si no, la acumulamos como continuación del texto hasta que llegue la línea que trae importe
+    # === Tabla de conceptos (multilínea) ===
     items: List[Dict[str, Any]] = []
 
-    pending_desc = ""
-    pending_qty = None
-    pending_subtotal = None
-
-    # patrón de línea completa:
-    # 78181507 DESCRIPCION SERVICIO 1 450.00 450.00
     pat_full = re.compile(
         r"^(?P<clave>\d{8})\s+(?P<desc>.+?)\s+(?P<unidad>[A-ZÁÉÍÓÚÑ]+)\s+"
         r"(?P<cant>\d+)\s+(?P<precio>[\d,]+\.\d{2})\s+(?P<importe>[\d,]+\.\d{2})$",
         re.I
     )
-
-    # patrón de “cierre” sin clave (cuando se partió):
-    # "... SERVICIO 1 1200.00 1200.00"
     pat_close = re.compile(
         r"^(?P<desc2>.+?)\s+(?P<unidad>[A-ZÁÉÍÓÚÑ]+)\s+(?P<cant>\d+)\s+"
         r"(?P<precio>[\d,]+\.\d{2})\s+(?P<importe>[\d,]+\.\d{2})$",
         re.I
     )
+
+    pending_desc = ""
 
     for line in full.splitlines():
         s = re.sub(r"\s+", " ", line.strip())
@@ -208,18 +201,16 @@ def parse_k9(pdf_bytes: bytes) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
             items.append({
                 "ACTIVIDAD": m1.group("desc").strip(),
                 "CANTIDAD": int(m1.group("cant")),
-                "SUBTOTAL": norm_money(m1.group("importe"))
+                "SUBTOTAL": norm_money(m1.group("importe")),
             })
             pending_desc = ""
             continue
 
-        # Si empieza con clave pero NO trae importe completo: acumulamos
+        # Si inicia con clave pero sin cierre: acumulamos
         if re.match(r"^\d{8}\s+", s):
-            # guardamos lo que venga después de la clave
             pending_desc = re.sub(r"^\d{8}\s+", "", s).strip()
             continue
 
-        # si estamos acumulando y llega la línea de cierre:
         if pending_desc:
             m2 = pat_close.match(s)
             if m2:
@@ -227,11 +218,10 @@ def parse_k9(pdf_bytes: bytes) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
                 items.append({
                     "ACTIVIDAD": full_desc,
                     "CANTIDAD": int(m2.group("cant")),
-                    "SUBTOTAL": norm_money(m2.group("importe"))
+                    "SUBTOTAL": norm_money(m2.group("importe")),
                 })
                 pending_desc = ""
             else:
-                # sigue siendo parte de la descripción
                 pending_desc = (pending_desc + " " + s).strip()
 
     return header, items
@@ -245,29 +235,23 @@ def parse_royan(pdf_bytes: bytes) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]
     factura = find_first(r"\b(ROYAN-\d+)\b", full)
     uuid = find_first(r"\b([0-9a-f]{8}-[0-9a-f\-]{27})\b", full, flags=re.I)
     fecha = find_first(r"\b(\d{2}/\d{2}/\d{4})\b", full)
-
-    # Caja: PI-183
     unidad = find_first(r"\bCaja:\s*([A-Z0-9\-]+)\b", full, flags=re.I)
 
     header = {
-        "EMPRESA": empresa,             # quieres PICUS (sale del Cliente)
+        "EMPRESA": empresa,            # PICUS
         "#FACTURA": factura,
         "UUID": uuid,
-        "FECHA FACTURA": fecha,         # solo fecha
-        "FECHA Y HR SERVICIO": "",      # no aplica
-        "#UNIDAD": unidad,
+        "FECHA FACTURA": fecha,        # 04/02/2026
+        "FECHA Y HR SERVICIO": "",
+        "#UNIDAD": unidad,             # PI-183
     }
 
-    # === Detalle (multilínea) ===
-    # En detalle viene como:
+    # Detalle multilínea:
     # 3,200.00 Actividad MANTENIMIENTO... Y PONER
     # 4 RETENES
     # ACT
     items: List[Dict[str, Any]] = []
-
-    # línea de inicio de concepto con importe
     pat_start = re.compile(r"^(?P<importe>[\d,]+\.\d{2})\s+Actividad\s+(?P<desc>.+)$", re.I)
-    # línea que indica fin (ACT al final o sola)
     pat_end_act = re.compile(r".*\bACT\b$", re.I)
 
     current_importe = None
@@ -281,7 +265,7 @@ def parse_royan(pdf_bytes: bytes) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]
 
             m = pat_start.match(line)
             if m:
-                # si había uno abierto, lo cerramos
+                # cierra el anterior si quedó abierto
                 if current_importe is not None and current_desc_parts:
                     desc = " ".join(current_desc_parts).strip()
                     items.append({"ACTIVIDAD": desc, "CANTIDAD": 1, "SUBTOTAL": norm_money(current_importe)})
@@ -291,9 +275,8 @@ def parse_royan(pdf_bytes: bytes) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]
                 current_desc_parts = [m.group("desc").strip()]
                 continue
 
-            # si hay uno abierto, acumulamos descripción hasta detectar ACT
             if current_importe is not None:
-                # si la línea es "ACT" o termina en ACT, quitamos ACT y cerramos
+                # cierra con ACT
                 if line.upper() == "ACT" or pat_end_act.match(line):
                     cleaned = re.sub(r"\bACT\b", "", line, flags=re.I).strip()
                     if cleaned:
@@ -304,10 +287,9 @@ def parse_royan(pdf_bytes: bytes) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]
                     current_importe = None
                     current_desc_parts = []
                 else:
-                    # continuación (segunda línea como "4 RETENES")
+                    # continuación
                     current_desc_parts.append(line)
 
-    # cierre por si quedó abierto
     if current_importe is not None and current_desc_parts:
         desc = " ".join(current_desc_parts).strip()
         items.append({"ACTIVIDAD": desc, "CANTIDAD": 1, "SUBTOTAL": norm_money(current_importe)})
@@ -319,24 +301,22 @@ def parse_wash(pdf_bytes: bytes) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
     pages = extract_pages_text(pdf_bytes)
     full = "\n".join(pages)
 
-    empresa = find_first(r"\n(PICUS)\n", full)  # en tus ejemplos es literal
+    empresa = find_first(r"\n(PICUS)\n", full)  # en tus ejemplos
     factura = find_first(r"SERIE Y FOLIO\s+([A-Z0-9\-]+)", full)
     uuid = find_first(r"FOLIO FISCAL \(UUID\)\s*\n([0-9A-F-]{36})", full, flags=re.I)
-
-    # FECHA FACTURA exacta: 05/01/2026 10:10:32
     fecha = find_first(r"FECHA DE EMISION\s+(\d{2}/\d{2}/\d{4}\s+\d{2}:\d{2}:\d{2})", full)
 
     header = {
         "EMPRESA": empresa,
         "#FACTURA": factura,
         "UUID": uuid,
-        "FECHA FACTURA": fecha,
+        "FECHA FACTURA": fecha,  # 05/01/2026 10:10:32
     }
 
-    # conceptos: tomamos REF.PAGO -> #UNIDAD, OBS -> FECHA Y HR SERVICIO
     items: List[Dict[str, Any]] = []
 
-    # Ej línea (texto lineal): "1 ... 78181500 ENTREGA ... 244973 PI-55 RL 2025-12-29 225.00 225.00"
+    # Línea típica extraída:
+    # 1 ... 78181500 ENTREGA ... 244973 PI-55 RL 2025-12-29 225.00 225.00
     pat = re.compile(
         r"^(?P<cant>\d+)\s+.+?\s+\d{8}\s+(?P<desc>.+?)\s+\d+\s+"
         r"(?P<ref>[A-Z0-9\- ]+)\s+(?P<obs>\d{4}-\d{2}-\d{2})\s+"
@@ -355,8 +335,8 @@ def parse_wash(pdf_bytes: bytes) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
                 "#FACTURA": header["#FACTURA"],
                 "UUID": header["UUID"],
                 "FECHA FACTURA": header["FECHA FACTURA"],
-                "FECHA Y HR SERVICIO": m.group("obs").strip(),  # OBS
-                "#UNIDAD": m.group("ref").strip(),             # REF.PAGO
+                "FECHA Y HR SERVICIO": m.group("obs").strip(),   # OBS
+                "#UNIDAD": m.group("ref").strip(),              # REF.PAGO
                 "ACTIVIDAD": m.group("desc").strip(),
                 "CANTIDAD": int(m.group("cant")),
                 "SUBTOTAL": norm_money(m.group("importe")),
@@ -364,12 +344,24 @@ def parse_wash(pdf_bytes: bytes) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
 
     return header, items
 
+
 def parse_ana_cecilia(pdf_bytes: bytes) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
+    """
+    Proveedor Ana Cecilia López Galván (ej. LINCOLN)
+    - EMPRESA: Nombre receptor
+    - #FACTURA: Folio
+    - UUID: Folio fiscal
+    - FECHA FACTURA: después del CP en "Código postal, fecha y hora de emisión"
+    - ACTIVIDAD: Descripción (puede ser multilínea)
+    - CANTIDAD: Cantidad (solo entero antes del punto)
+    - SUBTOTAL: Base
+    - IVA: tomar "Importe" del IVA (ya calculado)
+    """
     pages = extract_pages_text(pdf_bytes)
     full = "\n".join(pages)
 
-    empresa = find_first(r"Nombre receptor:\s*(.+)", full)  # LINCOLN...
-    factura = find_first(r"Folio:\s*(\d+)", full)           # 3346
+    empresa = find_first(r"Nombre receptor:\s*(.+)", full)
+    factura = find_first(r"Folio:\s*(\d+)", full)
     uuid = find_first(r"Folio fiscal:\s*([0-9A-F-]{36})", full, flags=re.I)
 
     # "Código postal, fecha y hora de emisión:\n88290 2026-02-05 18:35:12"
@@ -387,47 +379,46 @@ def parse_ana_cecilia(pdf_bytes: bytes) -> Tuple[Dict[str, Any], List[Dict[str, 
         "#UNIDAD": "",
     }
 
-    # Conceptos:
-    # Cantidad 1.00 ... (luego) Descripción <texto>
-    # (luego) IVA Traslado <base> ... Importe <iva_importe>
-    items: List[Dict[str, Any]] = []
-
+    # Tomamos líneas limpias
     lines = [ln.strip() for ln in full.splitlines() if ln.strip()]
 
+    items: List[Dict[str, Any]] = []
     i = 0
+
+    # Match flexible de renglón de concepto:
+    # 78181500 1.00 E48 Unidad de servicio 300 300.000000 300.000000
+    pat_item = re.compile(r"^\d{6,8}\s+(\d+\.\d+)\s+E48\s+Unidad de servicio\s+.*?\s+(\d+\.\d+)", re.I)
+
     while i < len(lines):
         line = re.sub(r"\s+", " ", lines[i])
 
-        # empieza un concepto cuando vemos: "78181500 1.00 E48 ... 300 300.000000 ..."
-        m = re.match(r"^\d{6,8}\s+(\d+\.\d+)\s+E48\s+Unidad de servicio\s+(\d+)\s+(\d+\.\d+)", line, flags=re.I)
+        m = pat_item.match(line)
         if m:
-            cantidad_float = m.group(1)          # "1.00"
-            cantidad = int(float(cantidad_float))  # solo antes del punto
-            base_str = m.group(3)                # "300.000000" (tu SUBTOTAL)
+            cantidad_float = m.group(1)   # 1.00
+            cantidad = int(float(cantidad_float))
+            base_str = m.group(2)         # 300.000000  (SUBTOTAL)
 
-            # buscamos la descripción en líneas siguientes: "Descripción ...."
+            # Buscar "Descripción ..." y concatenar continuaciones
             desc = ""
             j = i
-            while j < min(i + 12, len(lines)):
+            while j < min(i + 25, len(lines)):
                 if lines[j].startswith("Descripción"):
                     desc = lines[j].replace("Descripción", "").strip()
-                    # si se parte en varias líneas, concatenamos hasta topar "Impuesto" o siguiente clave
                     k = j + 1
                     while k < len(lines):
                         lk = lines[k]
                         if lk.startswith("Impuesto") or re.match(r"^\d{6,8}\s+\d+\.\d+", lk):
                             break
-                        # une continuación
                         desc += " " + lk
                         k += 1
                     desc = re.sub(r"\s+", " ", desc).strip()
                     break
                 j += 1
 
-            # buscamos IVA Importe (ya calculado) en líneas siguientes: "... IVA Traslado <base> ... Importe <iva>"
+            # Buscar IVA Importe ya calculado
             iva_importe = 0.0
             j = i
-            while j < min(i + 20, len(lines)):
+            while j < min(i + 40, len(lines)):
                 lk = re.sub(r"\s+", " ", lines[j])
                 miva = re.search(r"\bIVA\b.*\bTraslado\b.*\bImporte\b\s*([0-9]+\.[0-9]+)", lk, flags=re.I)
                 if miva:
@@ -440,18 +431,19 @@ def parse_ana_cecilia(pdf_bytes: bytes) -> Tuple[Dict[str, Any], List[Dict[str, 
                 "ACTIVIDAD": desc,
                 "CANTIDAD": cantidad,
                 "SUBTOTAL": norm_money(base_str),
-                "IVA": iva_importe,  # OJO: aquí el IVA ya viene calculado (no tasa)
+                "IVA": iva_importe,  # OJO: IVA ya viene calculado
             })
 
         i += 1
 
     return header, items
 
+
 # =========================
 # STREAMLIT UI
 # =========================
 st.title("📄 Lector de Facturas PDF → Excel")
-st.caption("Sube 1 o varios PDFs. El formato se autodetecta (K9 / ROYAN / WASH N CROSS).")
+st.caption("Sube 1 o varios PDFs. Se autodetecta: K9 / ROYAN / WASH N CROSS / ANA CECILIA.")
 
 files = st.file_uploader("Sube tus facturas PDF", type=["pdf"], accept_multiple_files=True)
 
@@ -482,14 +474,14 @@ if st.button("Procesar") and files:
             rows = [{**header, **it} for it in items]
             df = build_df(rows, iva_rate=0.16)
 
-        elif fmt == "ANA_CECILIA":
-            header, items = parse_ana_cecilia(pdf_bytes)
-            # items ya trae IVA por línea
-            df = build_df(items, iva_rate=0.08)  # iva_rate no se usa si viene IVA, pero lo dejamos
-
-        else:  # WASH
+        elif fmt == "WASH":
             header, items = parse_wash(pdf_bytes)
-            df = build_df(items, iva_rate=0.08)  # items ya vienen “por fila”
+            df = build_df(items, iva_rate=0.08)
+
+        else:  # ANA_CECILIA
+            header, items = parse_ana_cecilia(pdf_bytes)
+            # items ya trae IVA por línea (no se calcula)
+            df = build_df(items, iva_rate=0.08)
 
         all_dfs.append(df)
 
@@ -508,7 +500,7 @@ if st.button("Procesar") and files:
         st.subheader("Debug")
         st.dataframe(pd.DataFrame(debug_rows), use_container_width=True)
 
-    # export único
+    # Export único
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         final_df.to_excel(writer, index=False, sheet_name="FACTURAS")
