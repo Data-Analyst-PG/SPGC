@@ -82,32 +82,21 @@ def build_df(rows: List[Dict[str, Any]], iva_rate: float) -> pd.DataFrame:
     return pd.DataFrame(out, columns=COLS)
 
 def autodetect_format(full_text: str) -> str:
-    """
-    Autodetect por RFC EMISOR (la forma más confiable).
-    """
     t = strip_accents(full_text).upper()
 
-    # 1) ANA CECILIA LOPEZ GALVAN
-    # RFC emisor: LOGA8509108NA
-    if "RFC EMISOR:" in t and "LOGA8509108NA" in t:
+    # Detecta directo por RFC (sin depender de "RFC emisor:" / "RFCemisor:")
+    if "LOGA8509108NA" in t:
         return "ANA_CECILIA"
 
-    # 2) WASH N CROSS
-    # RFC: WNC070608P43
-    if "RFC" in t and "WNC070608P43" in t:
+    if "WNC070608P43" in t or "WASH N CROSS" in t:
         return "WASH"
 
-    # 3) ROYAN
-    # RFC: NAMA820330G3A
-    if "RFC" in t and "NAMA820330G3A" in t:
+    if "NAMA820330G3A" in t or "ROYAN-" in t:
         return "ROYAN"
 
-    # 4) K9
-    # RFC: BAEM890616HW5
-    if "RFC" in t and "BAEM890616HW5" in t:
+    if "BAEM890616HW5" in t or "COMENTARIOS:" in t or "ORDEN K9" in t:
         return "K9"
 
-    # Fallback seguro
     return "K9"
 
 def parse_k9(pdf_bytes: bytes) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
@@ -316,14 +305,17 @@ def parse_ana_cecilia(pdf_bytes: bytes) -> Tuple[Dict[str, Any], List[Dict[str, 
     pages = extract_pages_text(pdf_bytes)
     full = "\n".join(pages)
 
-    empresa = find_first(r"Nombre receptor:\s*(.+)", full)
-    factura = find_first(r"Folio:\s*(\d+)", full)
-    uuid = find_first(r"Folio fiscal:\s*([0-9A-F-]{36})", full, flags=re.I)
+    t = strip_accents(full)
 
-    fecha_factura = find_first(
-        r"C[oó]digo postal, fecha y hora de\s*emisi[oó]n:\s*\n?\s*\d+\s+(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})",
-        full, flags=re.I
-    )
+    empresa = find_first(r"Nombre\s*receptor:\s*(.+)", t, flags=re.I)
+    factura = find_first(r"Folio:\s*(\d+)", t, flags=re.I)
+    uuid = find_first(r"Folio\s*fiscal:\s*([0-9A-F-]{36})", t, flags=re.I)
+
+    # En tu PDF sale pegado: 882902026-02-0518:35:12
+    m = re.search(r"Codigo\s*postal,?fecha\s*y\s*hora\s*de.*?(\d{5})\s*(\d{4}-\d{2}-\d{2})\s*(\d{2}:\d{2}:\d{2})", t, flags=re.I)
+    fecha_factura = ""
+    if m:
+        fecha_factura = f"{m.group(2)} {m.group(3)}"
 
     header = {
         "EMPRESA": empresa,
