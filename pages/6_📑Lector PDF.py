@@ -83,32 +83,31 @@ def build_df(rows: List[Dict[str, Any]], iva_rate: float) -> pd.DataFrame:
 
 def autodetect_format(full_text: str) -> str:
     """
-    Detecta por NOMBRE EMISOR (Ana Cecilia) y por textos únicos:
-    - WASH N CROSS (título)
-    - ROYAN (nombre emisor o folio ROYAN-)
-    - K9 (nombre emisor o Comentarios/Orden K9)
+    Autodetect por RFC EMISOR (la forma más confiable).
     """
     t = strip_accents(full_text).upper()
 
-    # WASH
-    if "WASH N CROSS" in t:
+    # 1) ANA CECILIA LOPEZ GALVAN
+    # RFC emisor: LOGA8509108NA
+    if "RFC EMISOR:" in t and "LOGA8509108NA" in t:
+        return "ANA_CECILIA"
+
+    # 2) WASH N CROSS
+    # RFC: WNC070608P43
+    if "RFC" in t and "WNC070608P43" in t:
         return "WASH"
 
-    # ANA CECILIA (CFDI impreso: trae "Nombre emisor:")
-    m = re.search(r"NOMBRE EMISOR:\s*([A-Z0-9 .]+)", t)
-    if m:
-        emisor = m.group(1).strip()
-        if "ANA CECILIA LOPEZ GALVAN" in emisor:
-            return "ANA_CECILIA"
-
-    # ROYAN
-    if "ALLAN ADRIAN NAVARRO MACIAS" in t or "ROYAN-" in t:
+    # 3) ROYAN
+    # RFC: NAMA820330G3A
+    if "RFC" in t and "NAMA820330G3A" in t:
         return "ROYAN"
 
-    # K9
-    if "MA. DEL CARMEN BALDERAS ESCAMILLA" in t or "COMENTARIOS:" in t or "ORDEN K9" in t:
+    # 4) K9
+    # RFC: BAEM890616HW5
+    if "RFC" in t and "BAEM890616HW5" in t:
         return "K9"
 
+    # Fallback seguro
     return "K9"
 
 def parse_k9(pdf_bytes: bytes) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
