@@ -46,6 +46,18 @@ def clean_k9_service_dt(raw: str) -> str:
     raw = raw.replace("AM", "am").replace("PM", "pm")
     return raw
 
+def prettify_receiver_name(s: str) -> str:
+    """
+    En Ana Cecilia, el receptor a veces sale pegado: LINCOLNFREIGHTCOMPANYLLC
+    Aquí lo arreglamos con un mapeo simple (puedes agregar más si salen nuevos).
+    """
+    if not s:
+        return ""
+    u = s.upper().replace(" ", "")
+    if u == "LINCOLNFREIGHTCOMPANYLLC":
+        return "LINCOLN FREIGHT COMPANY LLC"
+    return s
+
 def build_df(rows: List[Dict[str, Any]], iva_rate: float) -> pd.DataFrame:
     """
     - Si la fila ya trae IVA numérico (ANA CECILIA), se respeta.
@@ -305,17 +317,23 @@ def parse_ana_cecilia(pdf_bytes: bytes) -> Tuple[Dict[str, Any], List[Dict[str, 
     pages = extract_pages_text(pdf_bytes)
     full = "\n".join(pages)
 
+    # Normalizamos: sin acentos, y espacios “estándar”
     t = strip_accents(full)
+    t1 = re.sub(r"\s+", " ", t).strip()   # una sola línea “limpia” para regex con DOTALL
 
-    empresa = find_first(r"Nombre\s*receptor:\s*(.+)", t, flags=re.I)
+    # ===== Encabezado =====
+    empresa_raw = find_first(r"Nombre\s*receptor:\s*([A-Z0-9 ]+)", t, flags=re.I)
+    empresa = prettify_receiver_name(empresa_raw)
+
     factura = find_first(r"Folio:\s*(\d+)", t, flags=re.I)
     uuid = find_first(r"Folio\s*fiscal:\s*([0-9A-F-]{36})", t, flags=re.I)
 
-    # En tu PDF sale pegado: 882902026-02-0518:35:12
-    m = re.search(r"Codigo\s*postal,?fecha\s*y\s*hora\s*de.*?(\d{5})\s*(\d{4}-\d{2}-\d{2})\s*(\d{2}:\d{2}:\d{2})", t, flags=re.I)
-    fecha_factura = ""
-    if m:
-        fecha_factura = f"{m.group(2)} {m.group(3)}"
+    # En tu PDF viene pegado: 882902026-02-0518:35:12
+    mdt = re.search(
+        r"Codigo\s*postal,?fechayhorade.*?(\d{5})\s*(\d{4}-\d{2}-\d{2})\s*(\d{2}:\d{2}:\d{2})",
+        t1, flags=re.I
+    )
+    fecha_factura = f"{mdt.group(2)} {mdt.group(3)}" if mdt else ""
 
     header = {
         "EMPRESA": empresa,
@@ -326,58 +344,50 @@ def parse_ana_cecilia(pdf_bytes: bytes) -> Tuple[Dict[str, Any], List[Dict[str, 
         "#UNIDAD": "",
     }
 
-    lines = [ln.strip() for ln in full.splitlines() if ln.strip()]
+    # ===== Conceptos =====
+    # Estructura real (según el texto extraído):
+    # 78181500 1.00 E48 Unidaddeservicio 300 300.000000 Siobjetodeimpuesto.
+    # ...
+    # Descripcion <TEXTO>
+    # IVA Traslado <BASE> Tasa 8.00% <IMPORTE_IVA>
+    # Numerodepedimento ...
+    #
+    # Vamos a capturar por cada bloque:
+    # - cantidad: 1.00 -> 1
+    # - actividad: lo que siga a "Descripcion" (puede cortarse en varias líneas)
+    # - subtotal: "Base" (sale dentro del bloque de IVA como número)
+    # - IVA: el último número después de "Tasa 8.00%"
     items: List[Dict[str, Any]] = []
 
-    # renglón flexible de concepto (cantidad + base)
-    pat_item = re.compile(r"^\d{6,8}\s+(\d+\.\d+)\s+E48\s+Unidad de servicio\s+.*?\s+(\d+\.\d+)", re.I)
+    concept_pat = re.compile(
+        r"(?P<clave>\d{8})\s+"
+        r"(?P<cant>\d+\.\d+)\s+E48\s+Unidaddeservicio\s+"
+        r"(?P<valor_unit>\d+)\s+(?P<imp_concepto>\d+\.\d+)\s+Siobjetodeimpuesto\.\s+"
+        r".*?Descripcion\s+(?P<desc>.+?)\s+"
+        r"IVA\s+Traslado\s+(?P<base>\d+\.\d+)\s+Tasa\s+(?P<tasa>\d+\.\d+)%\s+(?P<iva>\d+\.\d+)\s+"
+        r"Numerodepedimento",
+        flags=re.I | re.S
+    )
 
-    i = 0
-    while i < len(lines):
-        line = re.sub(r"\s+", " ", lines[i])
+    for m in concept_pat.finditer(t1):
+        cant = int(float(m.group("cant")))
+        desc = m.group("desc")
 
-        m = pat_item.match(line)
-        if m:
-            cantidad = int(float(m.group(1)))
-            base_str = m.group(2)
+        # Limpieza: a veces aparece "Factor Cuota" metido por el layout
+        desc = re.sub(r"\bFactor\b", " ", desc, flags=re.I)
+        desc = re.sub(r"\bCuota\b", " ", desc, flags=re.I)
+        desc = re.sub(r"\s+", " ", desc).strip()
 
-            # descripción multilínea
-            desc = ""
-            j = i
-            while j < min(i + 25, len(lines)):
-                if lines[j].startswith("Descripción"):
-                    desc = lines[j].replace("Descripción", "").strip()
-                    k = j + 1
-                    while k < len(lines):
-                        lk = lines[k]
-                        if lk.startswith("Impuesto") or re.match(r"^\d{6,8}\s+\d+\.\d+", lk):
-                            break
-                        desc += " " + lk
-                        k += 1
-                    desc = re.sub(r"\s+", " ", desc).strip()
-                    break
-                j += 1
+        base = norm_money(m.group("base"))
+        iva = norm_money(m.group("iva"))
 
-            # IVA ya calculado
-            iva_importe = 0.0
-            j = i
-            while j < min(i + 40, len(lines)):
-                lk = re.sub(r"\s+", " ", lines[j])
-                miva = re.search(r"\bIVA\b.*\bTraslado\b.*\bImporte\b\s*([0-9]+\.[0-9]+)", lk, flags=re.I)
-                if miva:
-                    iva_importe = norm_money(miva.group(1))
-                    break
-                j += 1
-
-            items.append({
-                **header,
-                "ACTIVIDAD": desc,
-                "CANTIDAD": cantidad,
-                "SUBTOTAL": norm_money(base_str),
-                "IVA": iva_importe,   # se respeta, NO se calcula tasa
-            })
-
-        i += 1
+        items.append({
+            **header,
+            "ACTIVIDAD": desc,
+            "CANTIDAD": cant,
+            "SUBTOTAL": base,
+            "IVA": iva,   # IVA ya viene calculado en el PDF
+        })
 
     return header, items
 
