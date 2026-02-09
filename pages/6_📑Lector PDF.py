@@ -62,6 +62,14 @@ def autodetect_format(full_text: str) -> str:
     # ROYAN
     if "ROYAN-" in t and "TIPO:" in t and "CLIENTE:" in t:
         return "ROYAN"
+    
+    # ANA CECILIA / LINCOLN (CFDI impreso típico)
+    if "NOMBRE EMISOR:" in t and "ANA CECILIA LOPEZ GALVAN" in t:
+        return "ANA_CECILIA"
+        
+    # (alternativa más general si luego cambia el emisor)
+    if "NOMBRE RECEPTOR:" in t and "CÓDIGO POSTAL, FECHA Y HORA DE\nEMISIÓN:" in t:
+        return "ANA_CECILIA"
 
     # K9
     if "K9" in t and "COMENTARIOS:" in t and "UUID" in t:
@@ -79,7 +87,14 @@ def build_df(rows: List[Dict[str, Any]], iva_rate: float) -> pd.DataFrame:
     out = []
     for r in rows:
         subtotal = float(r.get("SUBTOTAL", 0) or 0)
-        iva = round(subtotal * iva_rate, 2)
+
+        # Si el parser ya trae IVA numérico, úsalo; si no, calcúlalo
+        iva_val = r.get("IVA", None)
+        if iva_val is None or iva_val == "" or (isinstance(iva_val, float) and pd.isna(iva_val)):
+            iva = round(subtotal * iva_rate, 2)
+        else:
+            iva = round(float(iva_val), 2)
+
         total = round(subtotal + iva, 2)
 
         out.append({
@@ -349,6 +364,88 @@ def parse_wash(pdf_bytes: bytes) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
 
     return header, items
 
+def parse_ana_cecilia(pdf_bytes: bytes) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
+    pages = extract_pages_text(pdf_bytes)
+    full = "\n".join(pages)
+
+    empresa = find_first(r"Nombre receptor:\s*(.+)", full)  # LINCOLN...
+    factura = find_first(r"Folio:\s*(\d+)", full)           # 3346
+    uuid = find_first(r"Folio fiscal:\s*([0-9A-F-]{36})", full, flags=re.I)
+
+    # "Código postal, fecha y hora de emisión:\n88290 2026-02-05 18:35:12"
+    fecha_factura = find_first(
+        r"C[oó]digo postal, fecha y hora de\s*emisi[oó]n:\s*\n?\s*\d+\s+(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})",
+        full, flags=re.I
+    )
+
+    header = {
+        "EMPRESA": empresa,
+        "#FACTURA": factura,
+        "UUID": uuid,
+        "FECHA FACTURA": fecha_factura,
+        "FECHA Y HR SERVICIO": "",
+        "#UNIDAD": "",
+    }
+
+    # Conceptos:
+    # Cantidad 1.00 ... (luego) Descripción <texto>
+    # (luego) IVA Traslado <base> ... Importe <iva_importe>
+    items: List[Dict[str, Any]] = []
+
+    lines = [ln.strip() for ln in full.splitlines() if ln.strip()]
+
+    i = 0
+    while i < len(lines):
+        line = re.sub(r"\s+", " ", lines[i])
+
+        # empieza un concepto cuando vemos: "78181500 1.00 E48 ... 300 300.000000 ..."
+        m = re.match(r"^\d{6,8}\s+(\d+\.\d+)\s+E48\s+Unidad de servicio\s+(\d+)\s+(\d+\.\d+)", line, flags=re.I)
+        if m:
+            cantidad_float = m.group(1)          # "1.00"
+            cantidad = int(float(cantidad_float))  # solo antes del punto
+            base_str = m.group(3)                # "300.000000" (tu SUBTOTAL)
+
+            # buscamos la descripción en líneas siguientes: "Descripción ...."
+            desc = ""
+            j = i
+            while j < min(i + 12, len(lines)):
+                if lines[j].startswith("Descripción"):
+                    desc = lines[j].replace("Descripción", "").strip()
+                    # si se parte en varias líneas, concatenamos hasta topar "Impuesto" o siguiente clave
+                    k = j + 1
+                    while k < len(lines):
+                        lk = lines[k]
+                        if lk.startswith("Impuesto") or re.match(r"^\d{6,8}\s+\d+\.\d+", lk):
+                            break
+                        # une continuación
+                        desc += " " + lk
+                        k += 1
+                    desc = re.sub(r"\s+", " ", desc).strip()
+                    break
+                j += 1
+
+            # buscamos IVA Importe (ya calculado) en líneas siguientes: "... IVA Traslado <base> ... Importe <iva>"
+            iva_importe = 0.0
+            j = i
+            while j < min(i + 20, len(lines)):
+                lk = re.sub(r"\s+", " ", lines[j])
+                miva = re.search(r"\bIVA\b.*\bTraslado\b.*\bImporte\b\s*([0-9]+\.[0-9]+)", lk, flags=re.I)
+                if miva:
+                    iva_importe = norm_money(miva.group(1))
+                    break
+                j += 1
+
+            items.append({
+                **header,
+                "ACTIVIDAD": desc,
+                "CANTIDAD": cantidad,
+                "SUBTOTAL": norm_money(base_str),
+                "IVA": iva_importe,  # OJO: aquí el IVA ya viene calculado (no tasa)
+            })
+
+        i += 1
+
+    return header, items
 
 # =========================
 # STREAMLIT UI
@@ -384,6 +481,11 @@ if st.button("Procesar") and files:
             header, items = parse_royan(pdf_bytes)
             rows = [{**header, **it} for it in items]
             df = build_df(rows, iva_rate=0.16)
+
+        elif fmt == "ANA_CECILIA":
+            header, items = parse_ana_cecilia(pdf_bytes)
+            # items ya trae IVA por línea
+            df = build_df(items, iva_rate=0.08)  # iva_rate no se usa si viene IVA, pero lo dejamos
 
         else:  # WASH
             header, items = parse_wash(pdf_bytes)
