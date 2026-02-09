@@ -373,20 +373,41 @@ def parse_ana_cecilia(pdf_bytes: bytes) -> Tuple[Dict[str, Any], List[Dict[str, 
         cant = int(float(m.group("cant")))
         desc = m.group("desc")
 
-        # Limpieza: a veces aparece "Factor Cuota" metido por el layout
+        # Limpieza básica
         desc = re.sub(r"\bFactor\b", " ", desc, flags=re.I)
         desc = re.sub(r"\bCuota\b", " ", desc, flags=re.I)
+
+        # Recupera espacios típicos que pdfplumber pega
+        desc = desc.replace("PARA", " PARA ")
+        desc = desc.replace("EN", " EN ")
+        desc = desc.replace("DE", " DE ")
+        desc = desc.replace("LA", " LA ")
+        desc = desc.replace("AL", " AL ")
+        desc = desc.replace("A", " A ")
         desc = re.sub(r"\s+", " ", desc).strip()
+
+        # --- #UNIDAD: lo que va después del ":" (PI59, PI123, etc.)
+        unidad = ""
+        mu = re.search(r":\s*([A-Z]{2}\d+)\b", desc.upper())
+        if mu:
+            unidad = mu.group(1).strip()
+
+        # Si en algún caso viene "CAJA: PI-55" con guión, acepta también:
+        if not unidad:
+            mu2 = re.search(r":\s*([A-Z0-9\-]+)\b", desc.upper())
+            if mu2:
+                unidad = mu2.group(1).strip()
 
         base = norm_money(m.group("base"))
         iva = norm_money(m.group("iva"))
 
         items.append({
             **header,
+            "#UNIDAD": unidad,     # <-- aquí ya se llena
             "ACTIVIDAD": desc,
             "CANTIDAD": cant,
             "SUBTOTAL": base,
-            "IVA": iva,   # IVA ya viene calculado en el PDF
+            "IVA": iva,
         })
 
     return header, items
