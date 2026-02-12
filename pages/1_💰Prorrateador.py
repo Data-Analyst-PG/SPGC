@@ -902,4 +902,3 @@ if archivo_hist is not None:
             file_name="consolidado_historico_por_sucursal.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
-)
