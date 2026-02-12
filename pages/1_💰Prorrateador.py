@@ -382,7 +382,7 @@ def tipo_costo_hibrido(row) -> str:
             return "COMUN INTERNO"
         if c.startswith("EX"):
             return "COMUN EXTERNO"
-        return "COSTO INDIRECTO"
+        return "COMUN INTERNO"
 
     return "COMUN INTERNO"
 
