@@ -13,11 +13,6 @@ url = st.secrets["SUPABASE_URL"]
 key = st.secrets["SUPABASE_KEY"]
 supabase = create_client(url, key)
 
-
-
-# ======================================================================================================
-st.title("🧾Prorrateo de Gastos Generales")
-
 # =========================
 # ESTA PARTE CONSOLIDA TODOS LOS RESUMENES MENSUALES
 # =========================
@@ -184,6 +179,9 @@ if archivo_hist is not None:
             file_name="consolidado_historico_por_sucursal.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
+
+# ======================================================================================================
+st.title("🧾Prorrateo de Gastos Generales")
 
 # ================================
 # Subir archivo y generar resumen
