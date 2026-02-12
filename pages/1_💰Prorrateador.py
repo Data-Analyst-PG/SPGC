@@ -384,7 +384,7 @@ def tipo_costo_hibrido(row) -> str:
             return "COMUN EXTERNO"
         return "COSTO INDIRECTO"
 
-    return "COSTO INDIRECTO"
+    return "COMUN INTERNO"
 
 comunes["TIPO COSTO"] = comunes.apply(tipo_costo_hibrido, axis=1)
 
