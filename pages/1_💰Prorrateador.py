@@ -4,6 +4,7 @@ from io import BytesIO
 from supabase import create_client, Client
 from datetime import date
 from streamlit.runtime.scriptrunner import StopException
+import numpy as np
 
 # --- CONFIGURACIÓN SUPABASE ---
 url = st.secrets["SUPABASE_URL"]
@@ -507,4 +508,200 @@ st.download_button(
     data=exportar_excel(),
     file_name="generales_indirectos_consolidado.xlsx",
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+)
+
+st.divider()
+st.title("📅 Costo por Sucursal (Tablitas por mes)")
+
+# =========================
+# Validaciones de insumos
+# =========================
+if "prorrateo_completo" not in st.session_state:
+    st.warning("Primero ejecuta el Módulo 4 para generar el prorrateo (prorrateo_completo).")
+    st.stop()
+
+if "df_gts" not in locals() and "df_gts" not in st.session_state:
+    st.warning("Primero carga el archivo GTS (Módulo 3).")
+    st.stop()
+
+# toma df_gts ya sea del local o de session
+df_gts_local = df_gts if "df_gts" in locals() else st.session_state["df_gts"]
+prorr = st.session_state["prorrateo_completo"].copy()
+
+# =========================
+# Normalizaciones
+# =========================
+df_gts_local = df_gts_local.copy()
+df_gts_local.columns = df_gts_local.columns.astype(str).str.strip().str.upper()
+df_gts_local["SUCURSAL"] = df_gts_local["SUCURSAL"].astype(str).str.strip().str.upper()
+
+prorr.columns = prorr.columns.astype(str).str.strip().str.upper()
+prorr["SUCURSAL"] = prorr["SUCURSAL"].astype(str).str.strip().str.upper()
+
+# =========================
+# Helper: detectar columnas en GTS
+# =========================
+def _find_col(df, candidates):
+    cols = list(df.columns)
+    for c in candidates:
+        if c in cols:
+            return c
+    # fallback: búsqueda parcial
+    for c in cols:
+        for cand in candidates:
+            if cand in c:
+                return c
+    return None
+
+COL_FACT = _find_col(df_gts_local, ["FACTURACION DLLS", "FACTURACIÓN DLLS", "FACTURACION", "FACTURACIÓN"])
+COL_MC   = _find_col(df_gts_local, ["MC", "M.C.", "MARGEN", "MARGEN CONTRIBUCION", "MARGEN DE CONTRIBUCION"])
+
+if not COL_FACT or not COL_MC:
+    st.error(
+        "No pude detectar columnas en GTS.\n"
+        f"Encontré: {list(df_gts_local.columns)}\n\n"
+        "Asegúrate de tener algo como 'FACTURACION DLLS' y 'MC'."
+    )
+    st.stop()
+
+# =========================
+# Catálogo para distribución (AREA/CUENTA -> TIPO DISTRIBUCIÓN)
+# =========================
+cat_resp = supabase.table("catalogo_distribucion").select("*").execute()
+catalogo = pd.DataFrame(cat_resp.data)
+if catalogo.empty:
+    st.error("No hay datos en 'catalogo_distribucion' para traer el método de distribución.")
+    st.stop()
+
+catalogo = catalogo.rename(columns={
+    "area_cuenta": "AREA/CUENTA",
+    "tipo_distribucion": "TIPO DISTRIBUCIÓN"
+})
+catalogo["AREA/CUENTA"] = catalogo["AREA/CUENTA"].astype(str).str.strip().str.upper()
+
+
+# =========================
+# Función principal: genera 3 tablitas
+# =========================
+def generar_tablitas_mes_sucursal(sucursal: str):
+    suc = str(sucursal).strip().upper()
+
+    # ---- 1) Datos principales desde GTS ----
+    row_gts = df_gts_local[df_gts_local["SUCURSAL"].eq(suc)]
+    if row_gts.empty:
+        return None, None, None, f"No existe la sucursal '{suc}' en el archivo GTS."
+
+    facturacion = float(row_gts.iloc[0][COL_FACT] or 0)
+    mc = float(row_gts.iloc[0][COL_MC] or 0)
+
+    # costos directos = facturación - MC
+    costos_directos = facturacion - mc
+    utilidad = mc
+
+    # ---- 2) GASTOS INDIRECTOS: SOLO COMUN INTERNO (prorrateo ya asignado por sucursal) ----
+    gi = prorr[(prorr["SUCURSAL"].eq(suc)) & (prorr["TIPO COSTO"].eq("COMUN INTERNO"))].copy()
+
+    tabla_gi = (
+        gi.groupby("AREA/CUENTA", as_index=False)["CARGO ASIGNADO"]
+          .sum()
+          .rename(columns={"AREA/CUENTA": "GASTOS INDIRECTOS", "CARGO ASIGNADO": "IMPORTE"})
+          .sort_values("IMPORTE", ascending=False)
+          .reset_index(drop=True)
+    )
+    tabla_gi["%"] = np.where(facturacion != 0, tabla_gi["IMPORTE"] / facturacion, 0.0)
+
+    total_ci = float(tabla_gi["IMPORTE"].sum())
+    pct_ci = (total_ci / facturacion) if facturacion != 0 else 0.0
+
+    # ---- 3) AREA-TIPO GASTO: SOLO COMUN EXTERNO + método distribución desde catálogo ----
+    ge = prorr[(prorr["SUCURSAL"].eq(suc)) & (prorr["TIPO COSTO"].eq("COMUN EXTERNO"))].copy()
+
+    tabla_ge = (
+        ge.groupby("AREA/CUENTA", as_index=False)["CARGO ASIGNADO"]
+          .sum()
+          .rename(columns={"AREA/CUENTA": "AREA-TIPO GASTO", "CARGO ASIGNADO": "IMPORTE"})
+    )
+
+    # agregar distribución desde catálogo
+    tabla_ge["AREA_KEY"] = tabla_ge["AREA-TIPO GASTO"].astype(str).str.strip().str.upper()
+    tabla_ge = tabla_ge.merge(
+        catalogo[["AREA/CUENTA", "TIPO DISTRIBUCIÓN"]].rename(columns={"AREA/CUENTA": "AREA_KEY"}),
+        on="AREA_KEY",
+        how="left"
+    ).drop(columns=["AREA_KEY"])
+
+    tabla_ge["%"] = np.where(facturacion != 0, tabla_ge["IMPORTE"] / facturacion, 0.0)
+    tabla_ge = tabla_ge.sort_values("IMPORTE", ascending=False).reset_index(drop=True)
+
+    total_gn = float(tabla_ge["IMPORTE"].sum())
+    pct_gn = (total_gn / facturacion) if facturacion != 0 else 0.0
+
+    # ---- 4) Tablita superior ----
+    pct_ut_bruta = (utilidad / facturacion) if facturacion != 0 else 0.0
+    ut_per = utilidad - total_ci - total_gn
+    pct_ut_per = (ut_per / facturacion) if facturacion != 0 else 0.0
+
+    tabla_top = pd.DataFrame([{
+        "Sucursal": suc,
+        "Facturación": facturacion,
+        "Costos Directos": costos_directos,
+        "Utilidad": utilidad,
+        "% Ut Bruta": pct_ut_bruta,
+        "Costos Indirectos": total_ci,
+        "% CI": pct_ci,
+        "Gastos Generales": total_gn,
+        "% GN": pct_gn,
+        "UT/PER": ut_per,
+        "%UT/PER": pct_ut_per
+    }])
+
+    return tabla_top, tabla_gi, tabla_ge, None
+
+
+# =========================
+# UI
+# =========================
+sucursales_disponibles = sorted(df_gts_local["SUCURSAL"].dropna().unique().tolist())
+sucursal_sel = st.selectbox("Selecciona sucursal", sucursales_disponibles)
+
+tabla_top, tabla_gi, tabla_ge, err = generar_tablitas_mes_sucursal(sucursal_sel)
+
+if err:
+    st.error(err)
+    st.stop()
+
+# ---- Mostrar tablita superior ----
+st.subheader("🧾 Resumen superior")
+st.dataframe(tabla_top, use_container_width=True)
+
+# ---- Mostrar gastos indirectos (COMUN INTERNO) ----
+st.subheader("📌 GASTOS INDIRECTOS (Común Interno)")
+st.dataframe(tabla_gi, use_container_width=True)
+
+# ---- Mostrar area-tipo gasto (COMUN EXTERNO) ----
+st.subheader("📌 AREA-TIPO GASTO (Común Externo)")
+st.dataframe(tabla_ge, use_container_width=True)
+
+
+# =========================
+# Export a Excel (1 hoja por sucursal)
+# =========================
+def exportar_costo_sucursal_excel(tabla_top, tabla_gi, tabla_ge, nombre_sucursal):
+    from io import BytesIO
+    buffer = BytesIO()
+
+    with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
+        sheet = str(nombre_sucursal)[:31]  # límite Excel
+        # posiciones estilo "layout" (sin formato heavy)
+        tabla_top.to_excel(writer, sheet_name=sheet, index=False, startrow=0, startcol=0)
+        tabla_gi.to_excel(writer, sheet_name=sheet, index=False, startrow=4, startcol=0)
+        tabla_ge.to_excel(writer, sheet_name=sheet, index=False, startrow=4, startcol=6)
+
+    return buffer.getvalue()
+
+st.download_button(
+    "📥 Descargar Excel de esta sucursal",
+    data=exportar_costo_sucursal_excel(tabla_top, tabla_gi, tabla_ge, sucursal_sel),
+    file_name=f"costo_por_sucursal_{sucursal_sel}.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 )
