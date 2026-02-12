@@ -734,7 +734,7 @@ st.download_button(
     data=exportar_costo_sucursal_excel(tabla_top, tabla_gi, tabla_ge, sucursal_sel),
     file_name=f"costo_por_sucursal_{sucursal_sel}.xlsx",
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-
+)
 
 # =========================
 # ESTA PARTE CONSOLIDA TODOS LOS RESUMENES MENSUALES
