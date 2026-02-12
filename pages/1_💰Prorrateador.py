@@ -254,7 +254,7 @@ st.title("🔄Gasto General + Costos por Sucursal (con Tráfico/Fecha)")
 # ---------- Comprobación de insumos previos ----------
 if not all(k in st.session_state for k in ["df_original", "resumen", "porcentajes"]):
     st.warning("Faltan datos. Completa primero los módulos previos (df_original, resumen, porcentajes).")
-    st.stop()
+else:
 
 df_original = st.session_state["df_original"].copy()
 resumen_gasto_general = st.session_state["resumen"].copy()  # agrupado por AREA/CUENTA
