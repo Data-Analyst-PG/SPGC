@@ -599,7 +599,7 @@ def generar_tablitas_mes_sucursal(sucursal: str):
     utilidad = mc
 
     # ---- 2) GASTOS INDIRECTOS: SOLO COMUN INTERNO (prorrateo ya asignado por sucursal) ----
-    gi = prorr[(prorr["SUCURSAL"].eq(suc)) & (prorr["TIPO COSTO"].eq("COMUN INTERNO"))].copy()
+    gi = prorr[(prorr["SUCURSAL"].eq(suc)) & (prorr["TIPO COSTO"].eq("COSTO INDIRECTO"))].copy()
 
     tabla_gi = (
         gi.groupby("AREA/CUENTA", as_index=False)["CARGO ASIGNADO"]
@@ -614,8 +614,7 @@ def generar_tablitas_mes_sucursal(sucursal: str):
     pct_ci = (total_ci / facturacion) if facturacion != 0 else 0.0
 
     # ---- 3) AREA-TIPO GASTO: SOLO COMUN EXTERNO + método distribución desde catálogo ----
-    ge = prorr[(prorr["SUCURSAL"].eq(suc)) & (prorr["TIPO COSTO"].eq("COMUN EXTERNO"))].copy()
-
+    ge = prorr[(prorr["SUCURSAL"].eq(suc)) & (prorr["TIPO COSTO"].isin(["COMUN EXTERNO", "COMUN INTERNO"]))].copy()
     tabla_ge = (
         ge.groupby("AREA/CUENTA", as_index=False)["CARGO ASIGNADO"]
           .sum()
@@ -675,11 +674,11 @@ st.subheader("🧾 Resumen superior")
 st.dataframe(tabla_top, use_container_width=True)
 
 # ---- Mostrar gastos indirectos (COMUN INTERNO) ----
-st.subheader("📌 GASTOS INDIRECTOS (Común Interno)")
+st.subheader("📌 GASTOS INDIRECTOS (Costo indirecto)")
 st.dataframe(tabla_gi, use_container_width=True)
 
 # ---- Mostrar area-tipo gasto (COMUN EXTERNO) ----
-st.subheader("📌 AREA-TIPO GASTO (Común Externo)")
+st.subheader("📌 AREA-TIPO GASTO (Común interno + Común externo)")
 st.dataframe(tabla_ge, use_container_width=True)
 
 
