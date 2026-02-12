@@ -5,6 +5,7 @@ from supabase import create_client, Client
 from datetime import date
 from streamlit.runtime.scriptrunner import StopException
 import numpy as np
+import re
 
 # --- CONFIGURACIÓN SUPABASE ---
 url = st.secrets["SUPABASE_URL"]
@@ -306,6 +307,35 @@ def anexar_trafico_fecha(df: pd.DataFrame) -> pd.DataFrame:
 
 # ============ BLOQUE A: COSTOS CON SUCURSAL ASIGNADA ============
 df_original["SUCURSAL"] = df_original["SUCURSAL"].astype(str).str.strip().str.upper()
+
+
+def _suc_key(x: str) -> str:
+    # Convierte "CAR GAR", "CAR-GAR", "CAR/GAR" -> "CARGAR"
+    return re.sub(r"[^A-Z0-9]", "", str(x).strip().upper())
+
+# Sucursales válidas basadas en GTS (canónicas)
+if "porcentajes" in st.session_state:
+    # porcentajes está indexado por SUCURSAL (ya normalizado en tu módulo 3)
+    suc_validas = [s for s in st.session_state["porcentajes"].index.tolist()]
+else:
+    # fallback si por alguna razón no está porcentajes
+    suc_validas = []
+
+# Construir mapa key->nombre canónico (ej: "CARGAR" -> "CAR-GAR")
+map_suc = {_suc_key(s): s for s in suc_validas}
+
+# Homologar sucursal en df_original usando GTS como verdad
+df_original["SUCURSAL_ORIG"] = df_original["SUCURSAL"]
+df_original["SUCURSAL"] = df_original["SUCURSAL"].apply(lambda s: map_suc.get(_suc_key(s), s))
+
+# (Opcional) avisar cuáles no se pudieron homologar (y no son comunes)
+no_recon = df_original[
+    (~df_original["SUCURSAL"].isin(["GASTO GENERAL", "INTERNO", "EXTERNO"])) &
+    (~df_original["SUCURSAL"].isin(suc_validas))
+]["SUCURSAL_ORIG"].dropna().astype(str).unique().tolist()
+
+if no_recon:
+    st.warning(f"Sucursales NO reconocidas (revisa ortografía): {no_recon[:15]}{'...' if len(no_recon)>15 else ''}")
 
 # COSTO INDIRECTO = todo lo que NO sea INTERNO/EXTERNO
 no_general = df_original[~df_original["SUCURSAL"].isin(["GASTO GENERAL", "INTERNO", "EXTERNO"])].copy()
