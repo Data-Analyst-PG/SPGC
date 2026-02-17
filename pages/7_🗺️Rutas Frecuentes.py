@@ -197,7 +197,7 @@ if uploaded:
         st.stop()
 
     st.subheader("Vista previa")
-    st.dataframe(df.head(50), use_container_width=True)
+    st.dataframe(df.head(50), width="stretch")
 
     # Auto-detect column mapping
     guessed = {
@@ -265,7 +265,7 @@ if uploaded:
         st.success(f"Listo. Filas generadas: {len(df_report):,}")
 
         st.subheader("Reporte")
-        st.dataframe(df_report, use_container_width=True)
+        st.dataframe(df_report, width="stretch")
 
         excel_bytes = to_excel_bytes(df_report, sheet_name="Rutas Comunes")
         st.download_button(
@@ -276,4 +276,4 @@ if uploaded:
         )
 
         with st.expander("Debug: claves válidas (pasaron >N viajes/mes)"):
-            st.dataframe(df_keys, use_container_width=True)
+            st.dataframe(df_keys, width="stretch")
