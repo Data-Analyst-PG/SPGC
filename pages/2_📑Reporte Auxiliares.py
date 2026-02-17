@@ -498,7 +498,7 @@ else:
             df_clean = process_star2_many(raws)     # STAR 2.0 (consolidado)
 
         st.success(f"✅ Listo. Filas finales: {len(df_clean):,}")
-        st.dataframe(df_clean.head(1000), use_container_width=True)
+        st.dataframe(df_clean.head(1000), width="stretch")
 
         buf = BytesIO()
         with pd.ExcelWriter(buf, engine="openpyxl") as writer:
@@ -508,7 +508,7 @@ else:
             data=buf.getvalue(),
             file_name="Reporte_procesado.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True,
+            width="stretch",
         )
 
     except Exception as e:
