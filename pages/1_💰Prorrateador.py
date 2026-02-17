@@ -171,7 +171,7 @@ if archivo_hist is not None:
 
         sucursales = sorted(dfs.keys())
         suc_sel = st.selectbox("Ver consolidado de sucursal", sucursales, key="ver_suc_hist")
-        st.dataframe(dfs[suc_sel], use_container_width=True)
+        st.dataframe(dfs[suc_sel], width="stretch")
 
         st.download_button(
             "📥 Descargar consolidado (1 hoja por sucursal)",
@@ -225,7 +225,7 @@ if uploaded_file:
         st.session_state['resumen'] = resumen
 
         st.success("Resumen generado con éxito.")
-        st.dataframe(resumen, use_container_width=True)
+        st.dataframe(resumen, width="stretch")
 
         # Exportar a Excel
         def export_excel(df):
@@ -271,7 +271,7 @@ traficos_df = pd.DataFrame({
 st.markdown("### ✏️ Captura los números de tráfico")
 edit_df = st.data_editor(
     traficos_df,
-    use_container_width=True,
+    width="stretch",
     num_rows="fixed",
     key="trafico_editor"
 )
@@ -343,7 +343,7 @@ if 'resumen' in st.session_state:
     edited_df = st.data_editor(
         resumen_merged,
         num_rows="dynamic",
-        use_container_width=True,
+        width="stretch",
         column_config={
             "TIPO DISTRIBUCIÓN": st.column_config.SelectboxColumn(
                 label="Tipo de Distribución",
@@ -381,7 +381,7 @@ if archivo_gts:
 
         # Mostrar tabla original
         st.subheader("📄 Datos GTS cargados:")
-        st.dataframe(df_gts, use_container_width=True)
+        st.dataframe(df_gts, width="stretch")
 
         # Seleccionar solo columnas numéricas (los tipos de distribución)
         tipo_distrib_cols = df_gts.columns.drop("SUCURSAL")
@@ -390,7 +390,7 @@ if archivo_gts:
         totales = df_gts[tipo_distrib_cols].sum().rename("TOTAL").to_frame().T
 
         st.subheader("📌 Totales por Tipo de Distribución")
-        st.dataframe(totales, use_container_width=True)
+        st.dataframe(totales, width="stretch")
 
         # Calcular porcentajes por sucursal y tipo
         porcentajes = df_gts.copy()
@@ -402,7 +402,7 @@ if archivo_gts:
                 porcentajes[col] = 0
 
         st.subheader("📈 Porcentaje de Participación")
-        st.dataframe(porcentajes, use_container_width=True)
+        st.dataframe(porcentajes, width="stretch")
 
         # Guardar en memoria para módulo 4
         st.session_state["porcentajes"] = porcentajes.assign(
@@ -598,7 +598,7 @@ prorr_gg = anexar_trafico_fecha(prorr_gg)
 resultado = pd.concat([directos_agr, prorr_gg], ignore_index=True)
 
 st.subheader("📊 Resultado final (con Tráfico/Fecha por sucursal y fecha seleccionada)")
-st.dataframe(resultado, use_container_width=True)
+st.dataframe(resultado, width="stretch")
 
 # Guardar para módulos siguientes
 st.session_state["prorrateo_completo"] = resultado
@@ -659,7 +659,7 @@ for expected in ["COMUN INTERNO", "COMUN EXTERNO"]:
         pivot_comunes[expected] = 0.0
 
 st.subheader("📌 Comunes por sucursal")
-st.dataframe(pivot_comunes[[col_suc, "COMUN INTERNO", "COMUN EXTERNO"]], use_container_width=True)
+st.dataframe(pivot_comunes[[col_suc, "COMUN INTERNO", "COMUN EXTERNO"]], width="stretch")
 
 # ---------- 2) Indirectos por sucursal ----------
 # Suma todo lo etiquetado como COSTO INDIRECTO (incluye directos y Gasto General cuyo concepto no inicia IN/EX)
@@ -671,7 +671,7 @@ indirectos = (
 )
 
 st.subheader("📌 Indirectos por sucursal")
-st.dataframe(indirectos, use_container_width=True)
+st.dataframe(indirectos, width="stretch")
 
 # ---------- 3) Consolidado: comunes separados + indirecto + total ----------
 final = (
@@ -683,7 +683,7 @@ final["TOTAL"] = final["COMUN INTERNO"] + final["COMUN EXTERNO"] + final["INDIRE
 
 st.subheader("📊 Consolidado final")
 st.dataframe(final[[col_suc, "COMUN INTERNO", "COMUN EXTERNO", "INDIRECTO", "TOTAL"]],
-             use_container_width=True)
+             width="stretch")
 
 # ---------- 4) Exportar a Excel ----------
 def exportar_excel():
@@ -867,15 +867,15 @@ if err:
 
 # ---- Mostrar tablita superior ----
 st.subheader("🧾 Resumen superior")
-st.dataframe(tabla_top, use_container_width=True)
+st.dataframe(tabla_top, width="stretch")
 
 # ---- Mostrar gastos indirectos (COMUN INTERNO) ----
 st.subheader("📌 GASTOS INDIRECTOS (Costo indirecto)")
-st.dataframe(tabla_gi, use_container_width=True)
+st.dataframe(tabla_gi, width="stretch")
 
 # ---- Mostrar area-tipo gasto (COMUN EXTERNO) ----
 st.subheader("📌 AREA-TIPO GASTO (Común interno + Común externo)")
-st.dataframe(tabla_ge, use_container_width=True)
+st.dataframe(tabla_ge, width="stretch")
 
 
 # =========================
