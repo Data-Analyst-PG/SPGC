@@ -241,20 +241,20 @@ if uploaded:
     comparativo_df = build_comparativo(purchases_df, onroute_df)
 
     st.subheader("Tabla 1: Trip (1 fila por FSID)")
-    st.dataframe(trips_df, use_container_width=True)
+    st.dataframe(trips_df, width="stretch")
 
     st.subheader("Tabla 2: Fuel Purchases (paradas de compra)")
-    st.dataframe(purchases_df, use_container_width=True)
+    st.dataframe(purchases_df, width="stretch")
 
     st.subheader("Tabla 3: Stations On Route (todas las estaciones en ruta)")
-    st.dataframe(onroute_df, use_container_width=True)
+    st.dataframe(onroute_df, width="stretch")
 
     st.subheader("Tabla 4: Comparativo Non-Pilot (carga NO Pilot/FlyingJ vs opción más cercana Pilot/FlyingJ)")
     if comparativo_df.empty:
         st.info("No se generó comparativo (o todas las cargas fueron Pilot/FlyingJ, o faltan datos).")
     else:
         st.caption("Distancia calculada en línea recta (haversine).")
-        st.dataframe(comparativo_df, use_container_width=True)
+        st.dataframe(comparativo_df, width="stretch")
 
     excel_bytes = to_excel_bytes(trips_df, purchases_df, onroute_df, comparativo_df)
 
