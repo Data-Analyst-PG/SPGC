@@ -127,7 +127,7 @@ if file_data:
         df_data.columns = df_data.columns.astype(str)
 
         st.subheader("Vista previa DATA de viajes")
-        st.dataframe(df_data.head(), use_container_width=True)
+        st.dataframe(df_data.head(), width="stretch")
 
         # --- Detectar columnas clave ---
         col_fecha = find_column(
@@ -275,7 +275,7 @@ if file_data:
                     f"Totales del mes {anio_sel}-{mes_sel:02d} para CI "
                     "(TODOS los viajes del mes)"
                 )
-                st.dataframe(resumen_ci, use_container_width=True)
+                st.dataframe(resumen_ci, width="stretch")
 
                 st.write(
                     f"**% viajes con unidad (base CI):** {pct_con_unidad_ci:.4%}   |   "
@@ -331,7 +331,7 @@ if file_data:
                         f"Tabla por cliente"
                         f"(DATA filtrada por operadores, {anio_sel}-{mes_sel:02d})"
                     )
-                    st.dataframe(tabla_mes, use_container_width=True)
+                    st.dataframe(tabla_mes, width="stretch")
 
                     # Guardar para pasos 3 y 4
                     st.session_state["df_mes_clientes"] = tabla_mes
@@ -365,7 +365,7 @@ else:
             df_no.columns = df_no.columns.astype(str).str.strip()
 
             st.subheader("Vista previa costos no operativos")
-            st.dataframe(df_no.head(), use_container_width=True)
+            st.dataframe(df_no.head(), width="stretch")
 
             columnas_mes = [
                 c
@@ -493,7 +493,7 @@ if file_op:
         df_op.columns = df_op.columns.astype(str).str.strip()
 
         st.subheader("Vista previa costos ligados a operación")
-        st.dataframe(df_op.head(), use_container_width=True)
+        st.dataframe(df_op.head(), width="stretch")
 
         columnas_mes_op = [
             c
@@ -572,7 +572,7 @@ if file_op:
 
         edited_cat = st.data_editor(
             merged_cat,
-            use_container_width=True,
+            width="stretch",
             column_config={
                 "Tipo distribución": st.column_config.SelectboxColumn(
                     label="Tipo de distribución",
@@ -721,7 +721,7 @@ else:
                 asignaciones_df = pd.concat(asignaciones, ignore_index=True)
 
                 st.subheader("Detalle de asignación por concepto y cliente")
-                st.dataframe(asignaciones_df, use_container_width=True)
+                st.dataframe(asignaciones_df, width="stretch")
 
                 # Pivot para ver totales por cliente
                 pivot_clientes = (
@@ -742,7 +742,7 @@ else:
                 )
 
                 st.subheader("Totales por cliente (solo costos ligados a la operación)")
-                st.dataframe(pivot_clientes, use_container_width=True)
+                st.dataframe(pivot_clientes, width="stretch")
 
                 # Guardar para el paso 5
                 st.session_state["asignaciones_df"] = asignaciones_df
@@ -899,7 +899,7 @@ else:
                 )
 
             st.subheader("Vista previa viajes (después de filtro por mes)")
-            st.dataframe(df_trips.head(), use_container_width=True)
+            st.dataframe(df_trips.head(), width="stretch")
 
             # Buscar columnas clave
             col_customer = find_column(df_trips, ["Customer"])
@@ -1102,7 +1102,7 @@ else:
                 )
 
                 st.subheader("Vista previa con CI asignado")
-                st.dataframe(df_trips_work.head(), use_container_width=True)
+                st.dataframe(df_trips_work.head(), width="stretch")
 
                 # Descarga a Excel
                 def trips_to_excel_bytes(df):
