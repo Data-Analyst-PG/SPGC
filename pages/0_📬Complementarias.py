@@ -726,7 +726,7 @@ with tab_auditor:
         cols = [c for c in cols_pref if c in df_cerr.columns] + [c for c in df_cerr.columns if c not in cols_pref]
         df_cerr = df_cerr[cols]
 
-        st.dataframe(df_cerr, use_container_width=True)
+        st.dataframe(df_cerr, width="stretch")
 
         # Exports (cerrados filtrados)
         csv_bytes = df_cerr.to_csv(index=False).encode("utf-8")
