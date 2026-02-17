@@ -312,29 +312,31 @@ def calcular_prorrateo_cached(df_original: pd.DataFrame,
         faltantes = gg_agr.loc[gg_agr["TIPO DISTRIBUCIÓN"].isna(), "AREA/CUENTA"].unique().tolist()
         raise ValueError(f"Faltan tipos de distribución en el catálogo para: {faltantes[:10]}")
 
-    # Expansión por sucursales con porcentajes
-    prorr_rows = []
-    for _, r in gg_agr.iterrows():
-        area = r["AREA/CUENTA"]
-        tipo_dist = str(r["TIPO DISTRIBUCIÓN"]).upper()
-        tipo_costo = r["TIPO COSTO"]
-        total = r["TOTAL_AREA"]
+    # ===== Vectorización del prorrateo (sin loops) =====
 
-        if tipo_dist not in porcentajes.columns:
-            continue
+    # 1) porcentajes en formato largo: SUCURSAL, TIPO (columna), PCT
+    pct_long = (
+        porcentajes.reset_index()
+        .melt(id_vars="SUCURSAL", var_name="TIPO_DIST", value_name="PCT")
+    )
+    pct_long["TIPO_DIST"] = pct_long["TIPO_DIST"].astype(str).str.upper().str.strip()
+    pct_long = pct_long[pct_long["PCT"].fillna(0).astype(float) > 0].copy()
 
-        serie = porcentajes[tipo_dist]
-        for suc, pct in serie.items():
-            if pct and pct > 0:
-                prorr_rows.append({
-                    "AREA/CUENTA": area,
-                    "SUCURSAL": str(suc).upper().strip(),
-                    "TIPO DISTRIBUCIÓN": r["TIPO DISTRIBUCIÓN"],
-                    "TIPO COSTO": tipo_costo,
-                    "CARGO ASIGNADO": round(total * float(pct), 2)
-                })
+    # 2) gg_agr normalizado para hacer match con el tipo
+    gg2 = gg_agr.copy()
+    gg2["TIPO_DIST"] = gg2["TIPO DISTRIBUCIÓN"].astype(str).str.upper().str.strip()
 
-    prorr_gg = pd.DataFrame(prorr_rows)
+    # 3) merge y cálculo directo
+    prorr_gg = gg2.merge(pct_long, on="TIPO_DIST", how="left")
+    prorr_gg = prorr_gg.dropna(subset=["PCT"]).copy()
+
+    prorr_gg["CARGO ASIGNADO"] = (prorr_gg["TOTAL_AREA"].astype(float) * prorr_gg["PCT"].astype(float)).round(2)
+
+    # 4) dejar columnas finales como antes
+    prorr_gg = prorr_gg[[
+        "AREA/CUENTA", "SUCURSAL", "TIPO DISTRIBUCIÓN", "TIPO COSTO", "CARGO ASIGNADO"
+    ]]
+
     prorr_gg = anexar_trafico_fecha(prorr_gg)
 
     resultado = pd.concat([directos_agr, prorr_gg], ignore_index=True)
