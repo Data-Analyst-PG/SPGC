@@ -458,11 +458,11 @@ if st.button("Procesar") and files:
     final_df = pd.concat(all_dfs, ignore_index=True) if all_dfs else pd.DataFrame(columns=COLS)
 
     st.success(f"Listo: {len(final_df)} registros (de {len(files)} archivos).")
-    st.dataframe(final_df, use_container_width=True)
+    st.dataframe(final_df, width="stretch")
 
     if show_debug:
         st.subheader("Debug")
-        st.dataframe(pd.DataFrame(debug_rows), use_container_width=True)
+        st.dataframe(pd.DataFrame(debug_rows), width="stretch")
 
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
