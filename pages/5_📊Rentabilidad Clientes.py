@@ -171,7 +171,7 @@ if file_data:
         df_data.columns = df_data.columns.astype(str)
 
         st.subheader("Vista previa DATA de viajes")
-        st.dataframe(df_data.head(), use_container_width=True)
+        st.dataframe(df_data.head(), width="stretch")
 
         col_fecha = find_column(df_data, CFG["candidates_fecha"])
         col_customer = find_column(df_data, CFG["candidates_customer"])
@@ -282,7 +282,7 @@ if file_data:
         )
 
         st.subheader(f"Totales del mes {anio_sel}-{mes_sel:02d} para CI (TODOS los viajes del mes)")
-        st.dataframe(resumen_ci, use_container_width=True)
+        st.dataframe(resumen_ci, width="stretch")
 
         st.write(
             f"**% viajes con unidad (base CI):** {pct_con_unidad_ci:.4%}   |   "
@@ -326,7 +326,7 @@ if file_data:
             )
 
             st.subheader(f"Tabla por cliente ({anio_sel}-{mes_sel:02d})")
-            st.dataframe(tabla_mes, use_container_width=True)
+            st.dataframe(tabla_mes, width="stretch")
 
             st.session_state["df_mes_clientes"] = tabla_mes
 
@@ -356,7 +356,7 @@ else:
             df_no.columns = df_no.columns.astype(str).str.strip()
 
             st.subheader("Vista previa costos no operativos")
-            st.dataframe(df_no.head(), use_container_width=True)
+            st.dataframe(df_no.head(), width="stretch")
 
             columnas_mes = [
                 c for c in df_no.columns
@@ -451,7 +451,7 @@ if file_op:
         df_op.columns = df_op.columns.astype(str).str.strip()
 
         st.subheader("Vista previa costos ligados a operación")
-        st.dataframe(df_op.head(), use_container_width=True)
+        st.dataframe(df_op.head(), width="stretch")
 
         columnas_mes_op = [
             c for c in df_op.columns
@@ -495,7 +495,7 @@ if file_op:
 
         edited_cat = st.data_editor(
             merged_cat,
-            use_container_width=True,
+            width="stretch",
             column_config={
                 "Tipo distribución": st.column_config.SelectboxColumn(
                     label="Tipo de distribución",
@@ -611,7 +611,7 @@ else:
                 asignaciones_df = pd.concat(asignaciones, ignore_index=True)
 
                 st.subheader("Detalle de asignación por concepto y cliente")
-                st.dataframe(asignaciones_df, use_container_width=True)
+                st.dataframe(asignaciones_df, width="stretch")
 
                 pivot_clientes = (
                     asignaciones_df.pivot_table(
@@ -627,7 +627,7 @@ else:
                 pivot_clientes["Total costos ligados op"] = pivot_clientes.drop(columns=["Customer"]).sum(axis=1)
 
                 st.subheader("Totales por cliente (solo costos ligados a la operación)")
-                st.dataframe(pivot_clientes, use_container_width=True)
+                st.dataframe(pivot_clientes, width="stretch")
 
                 st.session_state["asignaciones_df"] = asignaciones_df
                 st.session_state["conceptos_tipos"] = df_op_mes[["Concepto", "Tipo distribución"]]
@@ -716,7 +716,7 @@ else:
                 st.warning("No se encontró columna de fecha o no hay año/mes definido. Se usarán todos los viajes.")
 
             st.subheader("Vista previa viajes (después de filtro por mes)")
-            st.dataframe(df_trips.head(), use_container_width=True)
+            st.dataframe(df_trips.head(), width="stretch")
 
             # Validaciones mínimas
             columnas_faltan = []
@@ -843,7 +843,7 @@ else:
             df_trips_work["CI_total"] = df_trips_work["CI_no_operativo"] + df_trips_work["CI_op_ligado_operacion"]
 
             st.subheader("Vista previa con CI asignado")
-            st.dataframe(df_trips_work.head(), use_container_width=True)
+            st.dataframe(df_trips_work.head(), width="stretch")
 
             def trips_to_excel_bytes(df):
                 buffer = BytesIO()
