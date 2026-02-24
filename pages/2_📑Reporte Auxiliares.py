@@ -510,7 +510,13 @@ else:
             df_clean = pd.concat(dfs, ignore_index=True)
 
         else:
-            df_clean = process_star2_many(raws)  # STAR 2 ya consolida múltiples
+            # Procesar TODOS los archivos STAR 2 y consolidar
+            dfs = []
+            for raw in raws:
+                df_i = process_star2_single(raw)
+                dfs.append(df_i)
+
+            df_clean = pd.concat(dfs, ignore_index=True)
 
         st.success(f"✅ Listo. Filas finales: {len(df_clean):,}")
         st.dataframe(df_clean.head(1000), width="stretch")
