@@ -270,7 +270,6 @@ def process_star2_single(df_raw: pd.DataFrame) -> pd.DataFrame:
         s_l = re.sub(r"\s+", " ", s.lower())
         if s_l == "poliza":    return "Poliza"
         if s_l == "concepto":  return "Concepto"
-        # Cliente / Proveedor y Sucursal (si las usas)
         if "cliente" in s_l and "proveedor" in s_l: return "Cliente / Proveedor"
         if "sucursal" in s_l or s_l in ("suc", "suc."): return "Sucursal"
         if s_l == "cheque":    return "Cheque"
@@ -284,56 +283,67 @@ def process_star2_single(df_raw: pd.DataFrame) -> pd.DataFrame:
 
     df = df.rename(columns={c: _norm_name(c) for c in df.columns})
 
-    # Cuenta desde A2 (fila 0 antes de quitarla) — cubre "Cuenta:" y ":".
-    cuenta_text = ""
-    if len(df) > 0 and df.shape[1] > 0:
-        a2 = str(df.iloc[0, 0]).replace("\xa0", " ").strip()
-        a2 = re.sub(r"^(cuenta\s*:|:)\s*", "", a2, flags=re.IGNORECASE).strip()
-        cuenta_text = a2
+    # Asegurar columna Cuenta
+    if "Cuenta" not in df.columns:
+        df.insert(0, "Cuenta", "")
 
-    # Remover A2 y reset
-    df_det = df.iloc[1:].reset_index(drop=True)
+    # ✅ NUEVO: detectar encabezados "Cuenta: ...." dentro del mismo archivo y propagar por bloque
+    cuenta_col = "Poliza" if "Poliza" in df.columns else df.columns[0]
 
-    # 🔴 NUEVO: si la primera fila trae "Saldo inicial" en la columna Saldo, eliminarla
-    if "Saldo" in df_det.columns and not df_det.empty:
-        if re.search(r"^saldo\s+inicial:?$", str(df_det.at[0, "Saldo"]).strip(), re.IGNORECASE):
-            df_det = df_det.iloc[1:].reset_index(drop=True)
+    cuenta_re = re.compile(r"^\s*(cuenta\s*:)\s*(.+)$", re.IGNORECASE)
+    # Formato típico: 200-03-99-001-02850 ...
+    acct_code_re = re.compile(r"^\s*\d{3}-\d{2}-\d{2}-\d{3}-\d{5}\b.*", re.IGNORECASE)
 
-    # 🔴 Eliminar filas-resumen en CUALQUIER columna (incluye "Total" y "Saldo inicial")
-    df_det = _drop_summary_rows(df_det)
+    last_cuenta = None
+    rows_to_drop = []
 
-    # Insertar Cuenta al inicio
-    if "Cuenta" not in df_det.columns:
-        df_det.insert(0, "Cuenta", cuenta_text)
-    else:
-        df_det["Cuenta"] = cuenta_text
+    for idx, val in df[cuenta_col].astype(str).items():
+        text = val.replace("\xa0", " ").strip()
+
+        m = cuenta_re.match(text)
+        if m:
+            last_cuenta = m.group(2).strip()
+            rows_to_drop.append(idx)   # eliminamos la fila "Cuenta: ..."
+            continue
+
+        # Por si alguna vez llega SIN "Cuenta:" pero con el código al inicio y sin otros datos
+        if acct_code_re.match(text):
+            other_has = any(
+                str(df.at[idx, c]).strip() not in {"", "nan", "None"}
+                for c in df.columns if c != cuenta_col
+            )
+            if not other_has:
+                last_cuenta = text
+                rows_to_drop.append(idx)
+                continue
+
+        if last_cuenta:
+            df.at[idx, "Cuenta"] = last_cuenta
+
+    df = df.drop(index=rows_to_drop).reset_index(drop=True)
+
+    # Eliminar filas-resumen (Total / Saldo inicial / etc.)
+    df = _drop_summary_rows(df)
 
     # Filtrar conceptos vacíos
-    if "Concepto" in df_det.columns:
-        df_det = df_det[df_det["Concepto"].astype(str).str.strip().ne("")]
+    if "Concepto" in df.columns:
+        df = df[df["Concepto"].astype(str).str.strip().ne("")]
 
     # Montos a numérico
     for col in ["Cargos", "Abonos", "Saldo"]:
-        if col in df_det.columns:
-            df_det[col] = df_det[col].apply(_to_num_safe)
+        if col in df.columns:
+            df[col] = df[col].apply(_to_num_safe)
 
     # Mantener filas con algún monto (si existen columnas de monto)
-    amt_cols = [c for c in ["Cargos", "Abonos", "Saldo"] if c in df_det.columns]
+    amt_cols = [c for c in ["Cargos", "Abonos", "Saldo"] if c in df.columns]
     if amt_cols:
-        df_det = df_det[df_det[amt_cols].fillna(0).abs().sum(axis=1) > 0].reset_index(drop=True)
+        df = df[df[amt_cols].fillna(0).abs().sum(axis=1) > 0].reset_index(drop=True)
 
-    # Orden final (ajusta si usas Cliente/Proveedor y Sucursal)
     desired = ["Cuenta", "Poliza", "Concepto", "Cliente / Proveedor", "Sucursal",
                "Cheque", "Trafico", "Factura", "Fecha", "Cargos", "Abonos", "Saldo"]
-    ordered = [c for c in desired if c in df_det.columns]
-    rest = [c for c in df_det.columns if c not in ordered]
-    return df_det[ordered + rest]
-
-def process_star2_many(raws):
-    frames = [process_star2_single(df_raw) for df_raw in raws]
-    if not frames:
-        return pd.DataFrame(columns=["Cuenta", "Poliza", "Concepto", "Cliente / Proveedor", "Sucursal", "Cheque", "Trafico", "Factura", "Fecha", "Cargos", "Abonos", "Saldo"])
-    return pd.concat(frames, ignore_index=True)
+    ordered = [c for c in desired if c in df.columns]
+    rest = [c for c in df.columns if c not in ordered]
+    return df[ordered + rest]
 
 
 # =====================================================
@@ -491,11 +501,16 @@ else:
             eff_mode = "star2"
 
         if eff_mode == "star1":
-            if len(raws) > 1:
-                st.warning("Modo STAR 1: se tomará solo el primer archivo.")
-            df_clean = process_report(raws[0])      # STAR 1
+            # Procesar TODOS los archivos y consolidar
+            dfs = []
+            for raw in raws:
+                df_i = process_report(raw)   # limpia cada archivo STAR 1
+                dfs.append(df_i)
+
+            df_clean = pd.concat(dfs, ignore_index=True)
+
         else:
-            df_clean = process_star2_many(raws)     # STAR 2.0 (consolidado)
+            df_clean = process_star2_many(raws)  # STAR 2 ya consolida múltiples
 
         st.success(f"✅ Listo. Filas finales: {len(df_clean):,}")
         st.dataframe(df_clean.head(1000), width="stretch")
