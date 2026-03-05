@@ -126,56 +126,6 @@ cont["IMPORTE"] = cont["IMPORTE"].apply(lambda x: norm_amount(x, ndigits))
 liq_f = apply_exclusions(liq, "TIPO_PAGO", exclusion_patterns)
 cont_f = apply_exclusions(cont, "TIPO_PAGO", exclusion_patterns)
 
-# ----------------------------------------
-# Auditoría de exclusiones (desplegable)
-# ----------------------------------------
-liq_excl = liq.loc[~liq.index.isin(liq_f.index)].copy()
-cont_excl = cont.loc[~cont.index.isin(cont_f.index)].copy()
-
-with st.expander("🔎 Ver filtros aplicados (exclusiones)", expanded=False):
-    st.markdown("### Patrones activos (regex)")
-    if exclusion_patterns:
-        st.code("\n".join(exclusion_patterns))
-    else:
-        st.info("No hay exclusiones activas.")
-
-    c1, c2 = st.columns(2)
-    c1.metric("Filtrados en Liquidaciones", len(liq_excl))
-    c2.metric("Filtrados en Contabilidad", len(cont_excl))
-
-    st.markdown("### Detalle (Tipo de pago filtrado más frecuente)")
-    col1, col2 = st.columns(2)
-
-    with col1:
-        st.caption("Liquidaciones – Top 15 filtrados")
-        if len(liq_excl) > 0:
-            top_liq = (
-                liq_excl["TIPO_PAGO"]
-                .fillna("")
-                .value_counts()
-                .head(15)
-                .reset_index()
-                .rename(columns={"index": "TIPO_PAGO", "TIPO_PAGO": "FILAS"})
-            )
-            st.dataframe(top_liq, use_container_width=True, height=320)
-        else:
-            st.write("Sin filas filtradas en Liquidaciones.")
-
-    with col2:
-        st.caption("Contabilidad – Top 15 filtrados")
-        if len(cont_excl) > 0:
-            top_cont = (
-                cont_excl["TIPO_PAGO"]
-                .fillna("")
-                .value_counts()
-                .head(15)
-                .reset_index()
-                .rename(columns={"index": "TIPO_PAGO", "TIPO_PAGO": "FILAS"})
-            )
-            st.dataframe(top_cont, use_container_width=True, height=320)
-        else:
-            st.write("Sin filas filtradas en Contabilidad.")
-
 st.subheader("Resumen de carga")
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("Liquidaciones (original)", len(liq))
@@ -237,6 +187,84 @@ diff_view = matches_owner_diff[pick_cols(matches_owner_diff, "LIQ") + pick_cols(
 liq_missing_view = only_liq[pick_cols(only_liq, "LIQ")].copy()
 cont_missing_view = only_cont[pick_cols(only_cont, "CONT")].copy()
 
+# ----------------------------------------
+# Auditoría de exclusiones (desplegable)
+# ----------------------------------------
+liq_excl = liq.loc[~liq.index.isin(liq_f.index)].copy()
+cont_excl = cont.loc[~cont.index.isin(cont_f.index)].copy()
+
+# Orden opcional para que sea más fácil revisar
+for df in (liq_excl, cont_excl):
+    if "PR" in df.columns and "VIAJE" in df.columns:
+        df.sort_values(by=["PR", "VIAJE", "UNIDAD", "TIPO_PAGO"], inplace=True, kind="stable")
+
+with st.expander("🔎 Ver filtros aplicados (exclusiones)", expanded=False):
+    st.markdown("### Patrones activos (regex)")
+    if exclusion_patterns:
+        st.code("\n".join(exclusion_patterns))
+    else:
+        st.info("No hay exclusiones activas.")
+
+    c1, c2 = st.columns(2)
+    c1.metric("Filtrados en Liquidaciones", len(liq_excl))
+    c2.metric("Filtrados en Contabilidad", len(cont_excl))
+
+    st.divider()
+    st.markdown("### Filas excluidas (detalle)")
+
+    # Controles para no saturar la pantalla
+    colA, colB, colC = st.columns([1, 1, 2])
+    with colA:
+        max_rows = st.number_input("Mostrar máximo de filas por tabla", min_value=100, max_value=200000, value=2000, step=100)
+    with colB:
+        show_all = st.checkbox("Mostrar TODO (puede ser pesado)", value=False)
+    with colC:
+        q = st.text_input("Buscar (PR / Viaje / Unidad / TipoPago / Owner)", value="").strip()
+
+    def filter_df(df: pd.DataFrame, query: str) -> pd.DataFrame:
+        if not query:
+            return df
+        # busca en columnas relevantes si existen
+        cols = [c for c in ["PR", "VIAJE", "UNIDAD", "TIPO_PAGO", "IMPORTE", "OWNER_LIQ", "OWNER_CONT"] if c in df.columns]
+        if not cols:
+            return df
+        mask = df[cols].astype(str).apply(lambda s: s.str.contains(query, case=False, na=False)).any(axis=1)
+        return df.loc[mask].copy()
+
+    liq_excl_view = filter_df(liq_excl, q)
+    cont_excl_view = filter_df(cont_excl, q)
+
+    if not show_all:
+        liq_excl_view = liq_excl_view.head(int(max_rows))
+        cont_excl_view = cont_excl_view.head(int(max_rows))
+
+    t1, t2 = st.tabs([
+        f"Liquidaciones excluidas ({len(liq_excl)} total)",
+        f"Contabilidad excluida ({len(cont_excl)} total)"
+    ])
+
+    with t1:
+        st.caption("Estas filas se eliminaron ANTES de comparar.")
+        if len(liq_excl) == 0:
+            st.success("No se excluyó ninguna fila en Liquidaciones.")
+        else:
+            # Solo columnas clave para auditoría (más legible)
+            cols_liq = [c for c in ["PR", "VIAJE", "UNIDAD", "TIPO_PAGO", "IMPORTE", "OWNER_LIQ"] if c in liq_excl_view.columns]
+            st.dataframe(liq_excl_view[cols_liq], use_container_width=True, height=420)
+
+    with t2:
+        st.caption("Estas filas se eliminaron ANTES de comparar.")
+        if len(cont_excl) == 0:
+            st.success("No se excluyó ninguna fila en Contabilidad.")
+        else:
+            cols_cont = [c for c in ["PR", "VIAJE", "UNIDAD", "TIPO_PAGO", "IMPORTE", "OWNER_CONT"] if c in cont_excl_view.columns]
+            st.dataframe(cont_excl_view[cols_cont], use_container_width=True, height=420)
+
+    st.info(
+        "Tip: si necesitas evidencia completa, también puedes incluir estas filas en el Excel descargable "
+        "(pestañas Filtrados_Liquidaciones y Filtrados_Contabilidad)."
+    )
+    
 st.divider()
 st.subheader("Resultados")
 
