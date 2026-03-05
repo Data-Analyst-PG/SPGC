@@ -47,7 +47,7 @@ def apply_exclusions(df: pd.DataFrame, col: str, patterns: list[str]) -> pd.Data
 # -----------------------------
 # UI
 # -----------------------------
-st.title("Confronta STAR: Liquidaciones vs Contabilidad")
+st.title("Confronta STAR vs SAC: Liquidaciones vs Contabilidad")
 
 with st.sidebar:
     st.header("Entradas")
@@ -125,6 +125,56 @@ cont["IMPORTE"] = cont["IMPORTE"].apply(lambda x: norm_amount(x, ndigits))
 # Apply exclusions by TIPO_PAGO (esto resuelve tu caso "cargos adicionales" y "ct pago x millas" si así lo defines)
 liq_f = apply_exclusions(liq, "TIPO_PAGO", exclusion_patterns)
 cont_f = apply_exclusions(cont, "TIPO_PAGO", exclusion_patterns)
+
+# ----------------------------------------
+# Auditoría de exclusiones (desplegable)
+# ----------------------------------------
+liq_excl = liq.loc[~liq.index.isin(liq_f.index)].copy()
+cont_excl = cont.loc[~cont.index.isin(cont_f.index)].copy()
+
+with st.expander("🔎 Ver filtros aplicados (exclusiones)", expanded=False):
+    st.markdown("### Patrones activos (regex)")
+    if exclusion_patterns:
+        st.code("\n".join(exclusion_patterns))
+    else:
+        st.info("No hay exclusiones activas.")
+
+    c1, c2 = st.columns(2)
+    c1.metric("Filtrados en Liquidaciones", len(liq_excl))
+    c2.metric("Filtrados en Contabilidad", len(cont_excl))
+
+    st.markdown("### Detalle (Tipo de pago filtrado más frecuente)")
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.caption("Liquidaciones – Top 15 filtrados")
+        if len(liq_excl) > 0:
+            top_liq = (
+                liq_excl["TIPO_PAGO"]
+                .fillna("")
+                .value_counts()
+                .head(15)
+                .reset_index()
+                .rename(columns={"index": "TIPO_PAGO", "TIPO_PAGO": "FILAS"})
+            )
+            st.dataframe(top_liq, use_container_width=True, height=320)
+        else:
+            st.write("Sin filas filtradas en Liquidaciones.")
+
+    with col2:
+        st.caption("Contabilidad – Top 15 filtrados")
+        if len(cont_excl) > 0:
+            top_cont = (
+                cont_excl["TIPO_PAGO"]
+                .fillna("")
+                .value_counts()
+                .head(15)
+                .reset_index()
+                .rename(columns={"index": "TIPO_PAGO", "TIPO_PAGO": "FILAS"})
+            )
+            st.dataframe(top_cont, use_container_width=True, height=320)
+        else:
+            st.write("Sin filas filtradas en Contabilidad.")
 
 st.subheader("Resumen de carga")
 c1, c2, c3, c4 = st.columns(4)
@@ -253,6 +303,9 @@ sheets = {
     "Matched_Owner_Diff": diff_view,
     "Missing_in_Contabilidad": liq_missing_view,
     "Missing_in_Liquidaciones": cont_missing_view,
+    "Filtrados_Liquidaciones": liq_excl,
+    "Filtrados_Contabilidad": cont_excl,
+    "Patrones_Exclusion": pd.DataFrame({"regex": exclusion_patterns}),
 }
 if enable_suggestions:
     sheets["Suggestions_Relaxed"] = suggestions_df
