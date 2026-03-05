@@ -37,13 +37,6 @@ def to_excel_bytes(sheets: dict[str, pd.DataFrame]) -> bytes:
     bio.seek(0)
     return bio.getvalue()
 
-def apply_exclusions(df: pd.DataFrame, col: str, patterns: list[str]) -> pd.DataFrame:
-    if not patterns:
-        return df
-    rx = re.compile("|".join([f"({p})" for p in patterns]), re.IGNORECASE)
-    mask = ~df[col].fillna("").astype(str).apply(lambda s: bool(rx.search(s)))
-    return df.loc[mask].copy()
-
 # -----------------------------
 # UI
 # -----------------------------
@@ -57,19 +50,10 @@ with st.sidebar:
     st.divider()
     st.header("Reglas de comparación")
 
-    ndigits = st.number_input("Redondeo de importe (decimales)", min_value=0, max_value=4, value=2, step=1)
-
-    st.caption("Exclusiones (regex). Ejemplos típicos:")
-    default_exclusions = [
-        r"CARGOS ADICIONALES",
-        r"CT\.\s*PAGO\s*X\s*MILLAS",
-    ]
-    exclusions = st.text_area(
-        "Patrones a IGNORAR (uno por línea)",
-        value="\n".join(default_exclusions),
-        height=120
+    ndigits = st.number_input(
+        "Redondeo de importe (decimales)",
+        min_value=0, max_value=4, value=2, step=1
     )
-    exclusion_patterns = [p.strip() for p in exclusions.splitlines() if p.strip()]
 
     st.caption("Sugerencias: si no encuentra exacto, busca por PR+Unidad+TipoPago+Importe (ignorando Viaje).")
     enable_suggestions = st.checkbox("Generar sugerencias para no-matcheados", value=True)
@@ -83,8 +67,8 @@ if not liq_file or not cont_file:
     st.stop()
 
 # Column mapping (según tus archivos)
-liq_usecols = ["Liquidacion", "Numero_Viaje", "TipoPago", "Monto", "Unidad", "Operador"]
-cont_usecols = ["Factura", "Referencia", "TipoPago", "Importe", "Unidad", "NombreCuentaContable"]
+liq_usecols = ["Liquidacion", "Numero_Viaje", "TipoPago", "Monto", "Unidad", "Operador", "tipo_concepto"]
+cont_usecols = ["Factura", "Referencia", "TipoPago", "Importe", "Unidad", "NombreCuentaContable", "tipo_movimiento"]
 
 try:
     liq = pd.read_excel(liq_file, sheet_name=0, usecols=liq_usecols)
@@ -101,6 +85,7 @@ liq = liq.rename(columns={
     "Monto": "IMPORTE",
     "Unidad": "UNIDAD",
     "Operador": "OWNER_LIQ",
+    "tipo_concepto": "TIPO_CONCEPTO",
 })
 cont = cont.rename(columns={
     "Factura": "PR",
@@ -109,22 +94,23 @@ cont = cont.rename(columns={
     "Importe": "IMPORTE",
     "Unidad": "UNIDAD",
     "NombreCuentaContable": "OWNER_CONT",
+    "tipo_movimiento": "TIPO_MOV",
 })
 
-for c in ["PR", "VIAJE", "TIPO_PAGO", "UNIDAD", "OWNER_LIQ"]:
+for c in ["PR", "VIAJE", "TIPO_PAGO", "UNIDAD", "OWNER_LIQ", "TIPO_CONCEPTO"]:
     if c in liq.columns:
         liq[c] = liq[c].apply(norm_text)
 
-for c in ["PR", "VIAJE", "TIPO_PAGO", "UNIDAD", "OWNER_CONT"]:
+for c in ["PR", "VIAJE", "TIPO_PAGO", "UNIDAD", "OWNER_CONT", "TIPO_MOV"]:
     if c in cont.columns:
         cont[c] = cont[c].apply(norm_text)
 
 liq["IMPORTE"] = liq["IMPORTE"].apply(lambda x: norm_amount(x, ndigits))
 cont["IMPORTE"] = cont["IMPORTE"].apply(lambda x: norm_amount(x, ndigits))
 
-# Apply exclusions by TIPO_PAGO (esto resuelve tu caso "cargos adicionales" y "ct pago x millas" si así lo defines)
-liq_f = apply_exclusions(liq, "TIPO_PAGO", exclusion_patterns)
-cont_f = apply_exclusions(cont, "TIPO_PAGO", exclusion_patterns)
+# Regla de negocio
+liq_f = liq[liq["TIPO_CONCEPTO"] == "E"].copy()
+cont_f = cont[cont["TIPO_MOV"] == "H"].copy()
 
 st.subheader("Resumen de carga")
 c1, c2, c3, c4 = st.columns(4)
@@ -190,20 +176,18 @@ cont_missing_view = only_cont[pick_cols(only_cont, "CONT")].copy()
 # ----------------------------------------
 # Auditoría de exclusiones (desplegable)
 # ----------------------------------------
-liq_excl = liq.loc[~liq.index.isin(liq_f.index)].copy()
-cont_excl = cont.loc[~cont.index.isin(cont_f.index)].copy()
+liq_excl = liq[liq["TIPO_CONCEPTO"] != "E"].copy()
+cont_excl = cont[cont["TIPO_MOV"] != "H"].copy()
 
 # Orden opcional para que sea más fácil revisar
 for df in (liq_excl, cont_excl):
     if "PR" in df.columns and "VIAJE" in df.columns:
         df.sort_values(by=["PR", "VIAJE", "UNIDAD", "TIPO_PAGO"], inplace=True, kind="stable")
 
-with st.expander("🔎 Ver filtros aplicados (exclusiones)", expanded=False):
-    st.markdown("### Patrones activos (regex)")
-    if exclusion_patterns:
-        st.code("\n".join(exclusion_patterns))
-    else:
-        st.info("No hay exclusiones activas.")
+with st.expander("🔎 Ver filtros aplicados (criterios)", expanded=False):
+    st.markdown("### Criterios activos")
+    st.write("- Liquidaciones: **TIPO_CONCEPTO = 'E'**")
+    st.write("- Contabilidad: **TIPO_MOV = 'H'**")
 
     c1, c2 = st.columns(2)
     c1.metric("Filtrados en Liquidaciones", len(liq_excl))
@@ -333,7 +317,12 @@ sheets = {
     "Missing_in_Liquidaciones": cont_missing_view,
     "Filtrados_Liquidaciones": liq_excl,
     "Filtrados_Contabilidad": cont_excl,
-    "Patrones_Exclusion": pd.DataFrame({"regex": exclusion_patterns}),
+    "Criterios_Filtro": pd.DataFrame({
+        "criterio": [
+            "Liquidaciones: TIPO_CONCEPTO = 'E'",
+            "Contabilidad: TIPO_MOV = 'H'",
+        ]
+    }),
 }
 if enable_suggestions:
     sheets["Suggestions_Relaxed"] = suggestions_df
