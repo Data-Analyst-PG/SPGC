@@ -67,8 +67,8 @@ if not liq_file or not cont_file:
     st.stop()
 
 # Column mapping (según tus archivos)
-liq_usecols = ["Liquidacion", "Numero_Viaje", "TipoPago", "Monto", "Unidad", "Operador", "tipo_concepto"]
-cont_usecols = ["Factura", "Referencia", "TipoPago", "Importe", "Unidad", "NombreCuentaContable", "tipo_movimiento"]
+liq_usecols = ["Liquidacion", "Numero_Viaje", "TipoPago", "Monto", "Unidad", "Operador", "Tipo_Concepto"]
+cont_usecols = ["Factura", "Referencia", "TipoPago", "Importe", "Unidad", "NombreCuentaContable", "TipoMovimiento"]
 
 try:
     liq = pd.read_excel(liq_file, sheet_name=0, usecols=liq_usecols)
@@ -85,7 +85,7 @@ liq = liq.rename(columns={
     "Monto": "IMPORTE",
     "Unidad": "UNIDAD",
     "Operador": "OWNER_LIQ",
-    "tipo_concepto": "TIPO_CONCEPTO",
+    "Tipo_Concepto": "TIPO_CONCEPTO",
 })
 cont = cont.rename(columns={
     "Factura": "PR",
@@ -94,7 +94,7 @@ cont = cont.rename(columns={
     "Importe": "IMPORTE",
     "Unidad": "UNIDAD",
     "NombreCuentaContable": "OWNER_CONT",
-    "tipo_movimiento": "TIPO_MOV",
+    "TipoMovimiento": "TIPO_MOV",
 })
 
 for c in ["PR", "VIAJE", "TIPO_PAGO", "UNIDAD", "OWNER_LIQ", "TIPO_CONCEPTO"]:
