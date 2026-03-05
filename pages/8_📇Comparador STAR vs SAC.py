@@ -54,6 +54,22 @@ with st.sidebar:
         "Redondeo de importe (decimales)",
         min_value=0, max_value=4, value=2, step=1
     )
+    st.divider()
+    st.header("Filtros por tipo")
+
+    liq_tipo = st.selectbox(
+        "Liquidaciones: Tipo_Concepto a considerar",
+        options=["E", "D", "I"],
+        index=0,  # por default E
+        help="Solo se compararán filas de Liquidaciones con este Tipo_Concepto"
+    )
+
+    cont_tipo = st.selectbox(
+        "Contabilidad: TipoMovimiento a considerar",
+        options=["H", "D", "I"],
+        index=0,  # por default H
+        help="Solo se compararán filas de Contabilidad con este TipoMovimiento"
+    )
 
     st.caption("Sugerencias: si no encuentra exacto, busca por PR+Unidad+TipoPago+Importe (ignorando Viaje).")
     enable_suggestions = st.checkbox("Generar sugerencias para no-matcheados", value=True)
@@ -108,9 +124,9 @@ for c in ["PR", "VIAJE", "TIPO_PAGO", "UNIDAD", "OWNER_CONT", "TIPO_MOV"]:
 liq["IMPORTE"] = liq["IMPORTE"].apply(lambda x: norm_amount(x, ndigits))
 cont["IMPORTE"] = cont["IMPORTE"].apply(lambda x: norm_amount(x, ndigits))
 
-# Regla de negocio
-liq_f = liq[liq["TIPO_CONCEPTO"] == "E"].copy()
-cont_f = cont[cont["TIPO_MOV"] == "H"].copy()
+# Regla de negocio (editable desde sidebar)
+liq_f = liq[liq["TIPO_CONCEPTO"] == liq_tipo].copy()
+cont_f = cont[cont["TIPO_MOV"] == cont_tipo].copy()
 
 st.subheader("Resumen de carga")
 c1, c2, c3, c4 = st.columns(4)
@@ -176,8 +192,8 @@ cont_missing_view = only_cont[pick_cols(only_cont, "CONT")].copy()
 # ----------------------------------------
 # Auditoría de exclusiones (desplegable)
 # ----------------------------------------
-liq_excl = liq[liq["TIPO_CONCEPTO"] != "E"].copy()
-cont_excl = cont[cont["TIPO_MOV"] != "H"].copy()
+liq_excl = liq[liq["TIPO_CONCEPTO"] != liq_tipo].copy()
+cont_excl = cont[cont["TIPO_MOV"] != cont_tipo].copy()
 
 # Orden opcional para que sea más fácil revisar
 for df in (liq_excl, cont_excl):
@@ -186,9 +202,8 @@ for df in (liq_excl, cont_excl):
 
 with st.expander("🔎 Ver filtros aplicados (criterios)", expanded=False):
     st.markdown("### Criterios activos")
-    st.write("- Liquidaciones: **TIPO_CONCEPTO = 'E'**")
-    st.write("- Contabilidad: **TIPO_MOV = 'H'**")
-
+    st.write(f"- Liquidaciones: **TIPO_CONCEPTO = '{liq_tipo}'**")
+    st.write(f"- Contabilidad: **TIPO_MOV = '{cont_tipo}'**")
     c1, c2 = st.columns(2)
     c1.metric("Filtrados en Liquidaciones", len(liq_excl))
     c2.metric("Filtrados en Contabilidad", len(cont_excl))
@@ -319,8 +334,8 @@ sheets = {
     "Filtrados_Contabilidad": cont_excl,
     "Criterios_Filtro": pd.DataFrame({
         "criterio": [
-            "Liquidaciones: TIPO_CONCEPTO = 'E'",
-            "Contabilidad: TIPO_MOV = 'H'",
+            f"Liquidaciones: TIPO_CONCEPTO = '{liq_tipo}'",
+            f"Contabilidad: TIPO_MOV = '{cont_tipo}'",
         ]
     }),
 }
