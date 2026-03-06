@@ -275,7 +275,87 @@ ok_view = matches_ok[pick_cols(matches_ok, "LIQ") + pick_cols(matches_ok, "CONT"
 diff_view = matches_owner_diff[pick_cols(matches_owner_diff, "LIQ") + pick_cols(matches_owner_diff, "CONT")].copy()
 liq_missing_view = only_liq[pick_cols(only_liq, "LIQ")].copy()
 cont_missing_view = only_cont[pick_cols(only_cont, "CONT")].copy()
-    
+
+# ----------------------------------------
+# Duplicados detectados
+# ----------------------------------------
+st.divider()
+st.subheader("🔁 Registros duplicados detectados")
+
+dup_key_cols = ["PR", "VIAJE", "UNIDAD", "TIPO_PAGO", "IMPORTE"]
+
+# Filas duplicadas (detalle)
+dup_liq = liq_f[liq_f.duplicated(subset=dup_key_cols, keep=False)].copy()
+dup_cont = cont_f[cont_f.duplicated(subset=dup_key_cols, keep=False)].copy()
+
+# Resumen por llave
+dup_liq_resumen = (
+    liq_f.groupby(dup_key_cols, dropna=False)
+    .size()
+    .reset_index(name="REPETICIONES")
+)
+dup_liq_resumen = dup_liq_resumen[dup_liq_resumen["REPETICIONES"] > 1].copy()
+
+dup_cont_resumen = (
+    cont_f.groupby(dup_key_cols, dropna=False)
+    .size()
+    .reset_index(name="REPETICIONES")
+)
+dup_cont_resumen = dup_cont_resumen[dup_cont_resumen["REPETICIONES"] > 1].copy()
+
+c1, c2 = st.columns(2)
+c1.metric("Duplicados en Liquidaciones", len(dup_liq))
+c2.metric("Duplicados en Contabilidad", len(dup_cont))
+
+tabs_dup = st.tabs([
+    f"Detalle duplicados Liquidaciones ({len(dup_liq)})",
+    f"Resumen duplicados Liquidaciones ({len(dup_liq_resumen)})",
+    f"Detalle duplicados Contabilidad ({len(dup_cont)})",
+    f"Resumen duplicados Contabilidad ({len(dup_cont_resumen)})",
+])
+
+with tabs_dup[0]:
+    if dup_liq.empty:
+        st.success("No hay filas duplicadas en Liquidaciones.")
+    else:
+        cols_liq_dup = [c for c in ["PR", "VIAJE", "UNIDAD", "TIPO_PAGO", "IMPORTE", "OWNER_LIQ"] if c in dup_liq.columns]
+        st.dataframe(
+            dup_liq[cols_liq_dup].sort_values(dup_key_cols),
+            use_container_width=True,
+            height=420
+        )
+
+with tabs_dup[1]:
+    if dup_liq_resumen.empty:
+        st.success("No hay combinaciones duplicadas en Liquidaciones.")
+    else:
+        st.dataframe(
+            dup_liq_resumen.sort_values(["REPETICIONES"] + dup_key_cols, ascending=[False, True, True, True, True, True]),
+            use_container_width=True,
+            height=420
+        )
+
+with tabs_dup[2]:
+    if dup_cont.empty:
+        st.success("No hay filas duplicadas en Contabilidad.")
+    else:
+        cols_cont_dup = [c for c in ["PR", "VIAJE", "UNIDAD", "TIPO_PAGO", "IMPORTE", "OWNER_CONT"] if c in dup_cont.columns]
+        st.dataframe(
+            dup_cont[cols_cont_dup].sort_values(dup_key_cols),
+            use_container_width=True,
+            height=420
+        )
+
+with tabs_dup[3]:
+    if dup_cont_resumen.empty:
+        st.success("No hay combinaciones duplicadas en Contabilidad.")
+    else:
+        st.dataframe(
+            dup_cont_resumen.sort_values(["REPETICIONES"] + dup_key_cols, ascending=[False, True, True, True, True, True]),
+            use_container_width=True,
+            height=420
+        )
+        
 # ----------------------------------------
 # Auditoría de exclusiones (desplegable)
 # ----------------------------------------
