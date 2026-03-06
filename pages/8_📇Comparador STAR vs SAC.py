@@ -133,9 +133,13 @@ current_signature = (
 
 if "last_signature" not in st.session_state:
     st.session_state.last_signature = None
-
+    
+if "processed" not in st.session_state:
+    st.session_state.processed = False
+    
 if current_signature != st.session_state.last_signature:
     st.session_state.processed = False
+    st.session_state.xlsx_bytes = None
 
 if run_process:
     st.session_state.processed = True
@@ -375,7 +379,13 @@ with tabs_dup[0]:
         st.success("No hay filas duplicadas en Liquidaciones.")
     else:
         cols_liq_dup = [c for c in ["PR", "VIAJE", "UNIDAD", "TIPO_PAGO", "IMPORTE", "OWNER_LIQ"] if c in dup_liq.columns]
-        show_df(dup_liq[cols_liq_dup].sort_values(dup_key_cols), height=420)
+        show_df(
+            dup_liq_resumen.sort_values(
+                ["REPETICIONES"] + dup_key_cols,
+                ascending=[False, True, True, True, True, True]
+            ),
+            height=420
+        )
 
 with tabs_dup[1]:
     if dup_liq_resumen.empty:
@@ -388,19 +398,17 @@ with tabs_dup[2]:
         st.success("No hay filas duplicadas en Contabilidad.")
     else:
         cols_cont_dup = [c for c in ["PR", "VIAJE", "UNIDAD", "TIPO_PAGO", "IMPORTE", "OWNER_CONT"] if c in dup_cont.columns]
-        st.dataframe(
-            dup_cont[cols_cont_dup].sort_values(dup_key_cols),
-            use_container_width=True,
-            height=420
-        )
+        show_df(dup_cont[cols_cont_dup].sort_values(dup_key_cols), height=420)
 
 with tabs_dup[3]:
     if dup_cont_resumen.empty:
         st.success("No hay combinaciones duplicadas en Contabilidad.")
     else:
-        st.dataframe(
-            dup_cont_resumen.sort_values(["REPETICIONES"] + dup_key_cols, ascending=[False, True, True, True, True, True]),
-            use_container_width=True,
+        show_df(
+            dup_cont_resumen.sort_values(
+                ["REPETICIONES"] + dup_key_cols,
+                ascending=[False, True, True, True, True, True]
+            ),
             height=420
         )
 
