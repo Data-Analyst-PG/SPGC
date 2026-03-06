@@ -355,7 +355,65 @@ with tabs_dup[3]:
             use_container_width=True,
             height=420
         )
-        
+
+# ----------------------------------------
+# Conciliación por PR
+# ----------------------------------------
+st.divider()
+st.subheader("📊 Conciliación por PR")
+
+liq_pr = (
+    liq_f.groupby("PR", dropna=False)
+    .agg(
+        REG_LIQ=("PR", "size"),
+        IMPORTE_LIQ=("IMPORTE", "sum")
+    )
+    .reset_index()
+)
+
+cont_pr = (
+    cont_f.groupby("PR", dropna=False)
+    .agg(
+        REG_CONT=("PR", "size"),
+        IMPORTE_CONT=("IMPORTE", "sum")
+    )
+    .reset_index()
+)
+
+conc_pr = liq_pr.merge(cont_pr, on="PR", how="outer").fillna(0)
+
+conc_pr["REG_LIQ"] = conc_pr["REG_LIQ"].astype(int)
+conc_pr["REG_CONT"] = conc_pr["REG_CONT"].astype(int)
+conc_pr["IMPORTE_LIQ"] = conc_pr["IMPORTE_LIQ"].astype(float)
+conc_pr["IMPORTE_CONT"] = conc_pr["IMPORTE_CONT"].astype(float)
+
+conc_pr["DIF_REG"] = conc_pr["REG_LIQ"] - conc_pr["REG_CONT"]
+conc_pr["DIF_IMPORTE"] = conc_pr["IMPORTE_LIQ"] - conc_pr["IMPORTE_CONT"]
+
+def clasifica_pr(row):
+    if row["REG_LIQ"] == row["REG_CONT"] and abs(row["DIF_IMPORTE"]) < 0.0001:
+        return "OK"
+    elif row["REG_LIQ"] != row["REG_CONT"] and abs(row["DIF_IMPORTE"]) < 0.0001:
+        return "MISMO IMPORTE / DIF REGISTROS"
+    elif row["REG_LIQ"] == row["REG_CONT"] and abs(row["DIF_IMPORTE"]) >= 0.0001:
+        return "MISMO NUM REG / DIF IMPORTE"
+    else:
+        return "REVISAR"
+
+conc_pr["ESTATUS"] = conc_pr.apply(clasifica_pr, axis=1)
+
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("PR totales", len(conc_pr))
+c2.metric("PR OK", (conc_pr["ESTATUS"] == "OK").sum())
+c3.metric("PR con diferencia de registros", (conc_pr["DIF_REG"] != 0).sum())
+c4.metric("PR con diferencia de importe", (conc_pr["DIF_IMPORTE"].abs() >= 0.0001).sum())
+
+st.dataframe(
+    conc_pr.sort_values(["ESTATUS", "PR"]),
+    use_container_width=True,
+    height=420
+)
+
 # ----------------------------------------
 # Auditoría de exclusiones (desplegable)
 # ----------------------------------------
@@ -554,6 +612,7 @@ sheets = {
     "Dup_Liq_Resumen": dup_liq_resumen,
     "Dup_Cont_Detalle": dup_cont,
     "Dup_Cont_Resumen": dup_cont_resumen,
+    "Conciliacion_PR": conc_pr,
     "Filtrados_Liq_Tipo": liq_excl_tipo,
     "Filtrados_Liq_Owner": liq_excl_owner,
     "Filtrados_Liq_Total": liq_excl_total,
