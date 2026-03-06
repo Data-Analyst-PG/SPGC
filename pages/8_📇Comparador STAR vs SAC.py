@@ -259,11 +259,11 @@ cont["IMPORTE"] = cont["IMPORTE"].apply(lambda x: norm_amount(x, ndigits))
 liq["IMPORTE"] = pd.to_numeric(liq["IMPORTE"], errors="coerce").astype("float32")
 cont["IMPORTE"] = pd.to_numeric(cont["IMPORTE"], errors="coerce").astype("float32")
 
-for col in ["PR", "VIAJE", "TIPO_PAGO", "UNIDAD", "OWNER_LIQ", "TIPO_CONCEPTO", "OWNER_STD_LIQ"]:
+for col in ["PR", "VIAJE", "TIPO_PAGO", "UNIDAD", "TIPO_CONCEPTO"]:
     if col in liq.columns:
         liq[col] = liq[col].astype("category")
 
-for col in ["PR", "VIAJE", "TIPO_PAGO", "UNIDAD", "OWNER_CONT", "TIPO_MOV", "OWNER_STD_CONT"]:
+for col in ["PR", "VIAJE", "TIPO_PAGO", "UNIDAD", "TIPO_MOV"]:
     if col in cont.columns:
         cont[col] = cont[col].astype("category")
         
@@ -303,7 +303,10 @@ matched = m[m["_merge"] == "both"].copy()
 only_liq = m[m["_merge"] == "left_only"].copy()
 only_cont = m[m["_merge"] == "right_only"].copy()
 
-matched["OWNER_MATCH"] = matched["OWNER_LIQ"].fillna("") == matched["OWNER_CONT"].fillna("")
+matched["OWNER_MATCH"] = (
+    matched["OWNER_LIQ"].astype("string").fillna("") ==
+    matched["OWNER_CONT"].astype("string").fillna("")
+)
 matched["DIF_OWNER"] = ~matched["OWNER_MATCH"]
 
 matches_ok = matched[matched["DIF_OWNER"] == False].copy()
@@ -617,12 +620,6 @@ if enable_suggestions and (len(liq_missing_view) > 0 or len(cont_missing_view) >
     # relaxed key
     relaxed_cols = ["PR", "UNIDAD", "TIPO_PAGO", "IMPORTE"]
 
-    liq_u = only_liq.copy()
-    cont_u = only_cont.copy()
-
-    liq_cols_keep = [c for c in ["PR", "VIAJE", "UNIDAD", "TIPO_PAGO", "IMPORTE", "_seq", "OWNER_LIQ"] if c in liq_u.columns]
-    cont_cols_keep = [c for c in ["PR", "VIAJE", "UNIDAD", "TIPO_PAGO", "IMPORTE", "_seq", "OWNER_CONT"] if c in cont_u.columns]
-
     liq_u = liq_u[liq_cols_keep].copy()
     cont_u = cont_u[cont_cols_keep].copy()
 
@@ -650,8 +647,14 @@ if enable_suggestions and (len(liq_missing_view) > 0 or len(cont_missing_view) >
     cand = liq_u.merge(cont_u, how="inner", on="_REL", suffixes=("_LIQ", "_CONT"))
     if len(cand) > 0:
         # rank: same viaje exact gets priority even though relaxed key ignores it
-        cand["SAME_VIAJE"] = cand["VIAJE_LIQ"].fillna("") == cand["VIAJE_CONT"].fillna("")
-        cand["OWNER_MATCH"] = cand["OWNER_LIQ"].fillna("") == cand["OWNER_CONT"].fillna("")
+        cand["SAME_VIAJE"] = (
+            cand["VIAJE_LIQ"].astype("string").fillna("") ==
+            cand["VIAJE_CONT"].astype("string").fillna("")
+        )
+        cand["OWNER_MATCH"] = (
+            cand["OWNER_LIQ"].astype("string").fillna("") ==
+            cand["OWNER_CONT"].astype("string").fillna("")
+        )
         cand = cand.sort_values(by=["SAME_VIAJE", "OWNER_MATCH"], ascending=[False, False])
 
         # cap suggestions per each LIQ row
