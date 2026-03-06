@@ -279,8 +279,29 @@ cont_missing_view = only_cont[pick_cols(only_cont, "CONT")].copy()
 # ----------------------------------------
 # Auditoría de exclusiones (desplegable)
 # ----------------------------------------
-liq_excl = liq[liq["TIPO_CONCEPTO"] != liq_tipo].copy()
-cont_excl = cont[cont["TIPO_MOV"] != cont_tipo].copy()
+
+# 1) Excluidos por tipo
+liq_excl_tipo = liq[liq["TIPO_CONCEPTO"] != liq_tipo].copy()
+cont_excl_tipo = cont[cont["TIPO_MOV"] != cont_tipo].copy()
+
+# 2) Excluidos por catálogo owner (solo sobre los que sí pasaron el filtro de tipo)
+if solo_owner and catalogo_file is not None:
+    liq_excl_owner = liq[
+        (liq["TIPO_CONCEPTO"] == liq_tipo) &
+        (liq["OWNER_STD_LIQ"] == "")
+    ].copy()
+
+    cont_excl_owner = cont[
+        (cont["TIPO_MOV"] == cont_tipo) &
+        (cont["OWNER_STD_CONT"] == "")
+    ].copy()
+else:
+    liq_excl_owner = pd.DataFrame(columns=liq.columns)
+    cont_excl_owner = pd.DataFrame(columns=cont.columns)
+
+# 3) Excluidos totales = todo lo que NO quedó en el dataframe final filtrado
+liq_excl_total = liq.loc[~liq.index.isin(liq_f.index)].copy()
+cont_excl_total = cont.loc[~cont.index.isin(cont_f.index)].copy()
 
 # Orden opcional para que sea más fácil revisar
 for df in (liq_excl, cont_excl):
@@ -291,61 +312,79 @@ with st.expander("🔎 Ver filtros aplicados (criterios)", expanded=False):
     st.markdown("### Criterios activos")
     st.write(f"- Liquidaciones: **TIPO_CONCEPTO = '{liq_tipo}'**")
     st.write(f"- Contabilidad: **TIPO_MOV = '{cont_tipo}'**")
-    c1, c2 = st.columns(2)
-    c1.metric("Filtrados en Liquidaciones", len(liq_excl))
-    c2.metric("Filtrados en Contabilidad", len(cont_excl))
+
+    if solo_owner and catalogo_file is not None:
+        st.write("- Catálogo: **solo registros con owner encontrado en catálogo**")
+    else:
+        st.write("- Catálogo: **sin filtro por owner**")
+
+    st.divider()
+    st.markdown("### Resumen de exclusiones")
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Liquidaciones excluidas por tipo", len(liq_excl_tipo))
+    c2.metric("Liquidaciones excluidas por owner", len(liq_excl_owner))
+    c3.metric("Liquidaciones excluidas total", len(liq_excl_total))
+
+    c4, c5, c6 = st.columns(3)
+    c4.metric("Contabilidad excluida por tipo", len(cont_excl_tipo))
+    c5.metric("Contabilidad excluida por owner", len(cont_excl_owner))
+    c6.metric("Contabilidad excluida total", len(cont_excl_total))
 
     st.divider()
     st.markdown("### Filas excluidas (detalle)")
 
-    # Controles para no saturar la pantalla
     colA, colB, colC = st.columns([1, 1, 2])
     with colA:
-        max_rows = st.number_input("Mostrar máximo de filas por tabla", min_value=100, max_value=200000, value=2000, step=100)
+        max_rows = st.number_input(
+            "Mostrar máximo de filas por tabla",
+            min_value=100, max_value=200000, value=2000, step=100
+        )
     with colB:
         show_all = st.checkbox("Mostrar TODO (puede ser pesado)", value=False)
     with colC:
         q = st.text_input("Buscar (PR / Viaje / Unidad / TipoPago / Owner)", value="").strip()
 
     def filter_df(df: pd.DataFrame, query: str) -> pd.DataFrame:
+        if df.empty:
+            return df
         if not query:
             return df
-        # busca en columnas relevantes si existen
         cols = [c for c in ["PR", "VIAJE", "UNIDAD", "TIPO_PAGO", "IMPORTE", "OWNER_LIQ", "OWNER_CONT"] if c in df.columns]
         if not cols:
             return df
         mask = df[cols].astype(str).apply(lambda s: s.str.contains(query, case=False, na=False)).any(axis=1)
         return df.loc[mask].copy()
 
-    liq_excl_view = filter_df(liq_excl, q)
-    cont_excl_view = filter_df(cont_excl, q)
-
-    if not show_all:
-        liq_excl_view = liq_excl_view.head(int(max_rows))
-        cont_excl_view = cont_excl_view.head(int(max_rows))
-
-    t1, t2 = st.tabs([
-        f"Liquidaciones excluidas ({len(liq_excl)} total)",
-        f"Contabilidad excluida ({len(cont_excl)} total)"
+    tabs = st.tabs([
+        f"Liq excluidas por tipo ({len(liq_excl_tipo)})",
+        f"Liq excluidas por owner ({len(liq_excl_owner)})",
+        f"Liq excluidas total ({len(liq_excl_total)})",
+        f"Cont excluidas por tipo ({len(cont_excl_tipo)})",
+        f"Cont excluidas por owner ({len(cont_excl_owner)})",
+        f"Cont excluidas total ({len(cont_excl_total)})",
     ])
 
-    with t1:
-        st.caption("Estas filas se eliminaron ANTES de comparar.")
-        if len(liq_excl) == 0:
-            st.success("No se excluyó ninguna fila en Liquidaciones.")
-        else:
-            # Solo columnas clave para auditoría (más legible)
-            cols_liq = [c for c in ["PR", "VIAJE", "UNIDAD", "TIPO_PAGO", "IMPORTE", "OWNER_LIQ"] if c in liq_excl_view.columns]
-            st.dataframe(liq_excl_view[cols_liq], use_container_width=True, height=420)
+    tablas = [
+        (tabs[0], liq_excl_tipo, ["PR", "VIAJE", "UNIDAD", "TIPO_PAGO", "IMPORTE", "OWNER_LIQ"]),
+        (tabs[1], liq_excl_owner, ["PR", "VIAJE", "UNIDAD", "TIPO_PAGO", "IMPORTE", "OWNER_LIQ"]),
+        (tabs[2], liq_excl_total, ["PR", "VIAJE", "UNIDAD", "TIPO_PAGO", "IMPORTE", "OWNER_LIQ"]),
+        (tabs[3], cont_excl_tipo, ["PR", "VIAJE", "UNIDAD", "TIPO_PAGO", "IMPORTE", "OWNER_CONT"]),
+        (tabs[4], cont_excl_owner, ["PR", "VIAJE", "UNIDAD", "TIPO_PAGO", "IMPORTE", "OWNER_CONT"]),
+        (tabs[5], cont_excl_total, ["PR", "VIAJE", "UNIDAD", "TIPO_PAGO", "IMPORTE", "OWNER_CONT"]),
+    ]
 
-    with t2:
-        st.caption("Estas filas se eliminaron ANTES de comparar.")
-        if len(cont_excl) == 0:
-            st.success("No se excluyó ninguna fila en Contabilidad.")
-        else:
-            cols_cont = [c for c in ["PR", "VIAJE", "UNIDAD", "TIPO_PAGO", "IMPORTE", "OWNER_CONT"] if c in cont_excl_view.columns]
-            st.dataframe(cont_excl_view[cols_cont], use_container_width=True, height=420)
+    for tab, df_src, cols_show in tablas:
+        with tab:
+            df_view = filter_df(df_src, q)
+            if not show_all:
+                df_view = df_view.head(int(max_rows))
 
+            if df_src.empty:
+                st.success("Sin filas en esta categoría.")
+            else:
+                cols_ok = [c for c in cols_show if c in df_view.columns]
+                st.dataframe(df_view[cols_ok], use_container_width=True, height=420)
     st.info(
         "Tip: si necesitas evidencia completa, también puedes incluir estas filas en el Excel descargable "
         "(pestañas Filtrados_Liquidaciones y Filtrados_Contabilidad)."
@@ -428,12 +467,17 @@ sheets = {
     "Matched_Owner_Diff": diff_view,
     "Missing_in_Contabilidad": liq_missing_view,
     "Missing_in_Liquidaciones": cont_missing_view,
-    "Filtrados_Liquidaciones": liq_excl,
-    "Filtrados_Contabilidad": cont_excl,
+    "Filtrados_Liq_Tipo": liq_excl_tipo,
+    "Filtrados_Liq_Owner": liq_excl_owner,
+    "Filtrados_Liq_Total": liq_excl_total,
+    "Filtrados_Cont_Tipo": cont_excl_tipo,
+    "Filtrados_Cont_Owner": cont_excl_owner,
+    "Filtrados_Cont_Total": cont_excl_total,
     "Criterios_Filtro": pd.DataFrame({
         "criterio": [
             f"Liquidaciones: TIPO_CONCEPTO = '{liq_tipo}'",
             f"Contabilidad: TIPO_MOV = '{cont_tipo}'",
+            f"Filtro owner activo: {solo_owner}",
         ]
     }),
 }
