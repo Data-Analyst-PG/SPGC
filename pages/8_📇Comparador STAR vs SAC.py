@@ -121,7 +121,7 @@ current_signature = (
     (liq_file.name, len(liq_file.getvalue())) if liq_file else ("", 0),
     (cont_file.name, len(cont_file.getvalue())) if cont_file else ("", 0),
     (catalogo_file.name, len(catalogo_file.getvalue())) if catalogo_file else ("", 0),
-    solo_owner,
+    tuple(sorted(tipos_catalogo_seleccionados)),
     ndigits,
     liq_tipo,
     cont_tipo,
@@ -531,22 +531,22 @@ with st.expander("🔎 Ver filtros aplicados (criterios)", expanded=False):
     st.write(f"- Liquidaciones: **TIPO_CONCEPTO = '{liq_tipo}'**")
     st.write(f"- Contabilidad: **TIPO_MOV = '{cont_tipo}'**")
 
-    if solo_owner and catalogo_file is not None:
-        st.write("- Catálogo: **solo registros con owner encontrado en catálogo**")
+    if filtro_catalogo_activo:
+        st.write(f"- Catálogo: **filtrado por tipos seleccionados: {', '.join(tipos_catalogo_seleccionados)}**")
     else:
-        st.write("- Catálogo: **sin filtro por owner**")
+        st.write("- Catálogo: **sin filtro por catálogo**")
 
     st.divider()
     st.markdown("### Resumen de exclusiones")
 
     c1, c2, c3 = st.columns(3)
     c1.metric("Liquidaciones excluidas por tipo", len(liq_excl_tipo))
-    c2.metric("Liquidaciones excluidas por owner", len(liq_excl_owner))
+    c2.metric("Liquidaciones excluidas por catálogo", len(liq_excl_owner))
     c3.metric("Liquidaciones excluidas total", len(liq_excl_total))
 
     c4, c5, c6 = st.columns(3)
     c4.metric("Contabilidad excluida por tipo", len(cont_excl_tipo))
-    c5.metric("Contabilidad excluida por owner", len(cont_excl_owner))
+    c5.metric("Contabilidad excluida por catálogo", len(cont_excl_owner))
     c6.metric("Contabilidad excluida total", len(cont_excl_total))
 
     st.divider()
@@ -576,10 +576,10 @@ with st.expander("🔎 Ver filtros aplicados (criterios)", expanded=False):
 
     tabs = st.tabs([
         f"Liq excluidas por tipo ({len(liq_excl_tipo)})",
-        f"Liq excluidas por owner ({len(liq_excl_owner)})",
+        f"Liq excluidas por catálogo ({len(liq_excl_owner)})",
         f"Liq excluidas total ({len(liq_excl_total)})",
         f"Cont excluidas por tipo ({len(cont_excl_tipo)})",
-        f"Cont excluidas por owner ({len(cont_excl_owner)})",
+        f"Cont excluidas por catálogo ({len(cont_excl_owner)})",
         f"Cont excluidas total ({len(cont_excl_total)})",
     ])
 
@@ -719,7 +719,8 @@ sheets = {
         "criterio": [
             f"Liquidaciones: TIPO_CONCEPTO = '{liq_tipo}'",
             f"Contabilidad: TIPO_MOV = '{cont_tipo}'",
-            f"Filtro owner activo: {solo_owner}",
+            f"Filtro catálogo activo: {filtro_catalogo_activo}",
+            f"Tipos catálogo seleccionados: {', '.join(tipos_catalogo_seleccionados) if tipos_catalogo_seleccionados else 'Todos'}",
         ]
     }),
 }
