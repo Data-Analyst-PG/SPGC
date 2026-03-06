@@ -37,6 +37,27 @@ def to_excel_bytes(sheets: dict[str, pd.DataFrame]) -> bytes:
     bio.seek(0)
     return bio.getvalue()
 
+@st.cache_data(show_spinner=False)
+def read_excel_cached(file_bytes: bytes, sheet_name: str, usecols: list[str]) -> pd.DataFrame:
+    return pd.read_excel(BytesIO(file_bytes), sheet_name=sheet_name, usecols=usecols)
+
+@st.cache_data(show_spinner=False)
+def read_catalogo_cached(file_bytes: bytes) -> pd.DataFrame:
+    return pd.read_excel(BytesIO(file_bytes))
+
+@st.cache_data(show_spinner=False)
+def build_excel_cached(sheets: dict[str, pd.DataFrame]) -> bytes:
+    return to_excel_bytes(sheets)
+
+def show_df(df: pd.DataFrame, height: int = 420, max_rows: int = 2000):
+    if df.empty:
+        st.dataframe(df, use_container_width=True, height=height)
+    elif len(df) > max_rows:
+        st.caption(f"Mostrando {max_rows:,} de {len(df):,} filas. El Excel descargable incluye todo.")
+        st.dataframe(df.head(max_rows), use_container_width=True, height=height)
+    else:
+        st.dataframe(df, use_container_width=True, height=height)
+        
 # -----------------------------
 # UI
 # -----------------------------
@@ -86,8 +107,10 @@ with st.sidebar:
     )
 
     st.caption("Sugerencias: si no encuentra exacto, busca por PR+Unidad+TipoPago+Importe (ignorando Viaje).")
-    enable_suggestions = st.checkbox("Generar sugerencias para no-matcheados", value=True)
+    enable_suggestions = st.checkbox("Generar sugerencias para no-matcheados", value=False)
     suggestions_limit = st.number_input("Máx. sugerencias por renglón", 1, 10, 3)
+    st.divider()
+    run_process = st.button("Procesar confronta", type="primary")
 
 # -----------------------------
 # Run
@@ -96,13 +119,26 @@ if not liq_file or not cont_file:
     st.info("Carga ambos archivos para iniciar.")
     st.stop()
 
+if "processed" not in st.session_state:
+    st.session_state.processed = False
+
+if run_process:
+    st.session_state.processed = True
+
+if not st.session_state.processed:
+    st.info("Configura los filtros y da clic en 'Procesar confronta'.")
+    st.stop()
+    
 # Column mapping (según tus archivos)
 liq_usecols = ["Liquidacion", "Numero_Viaje", "TipoPago", "Monto", "Unidad", "Operador", "Tipo_Concepto"]
 cont_usecols = ["Factura", "Referencia", "TipoPago", "Importe", "Unidad", "NombreCuentaContable", "TipoMovimiento"]
 
 try:
-    liq = pd.read_excel(liq_file, sheet_name="LiquidacionesSET_PLUS_datos", usecols=liq_usecols)
-    cont = pd.read_excel(cont_file, sheet_name="ContabilidadSET_PLUS_datos", usecols=cont_usecols)
+    liq_bytes = liq_file.getvalue()
+    cont_bytes = cont_file.getvalue()
+
+    liq = read_excel_cached(liq_bytes, "LiquidacionesSET_PLUS_datos", liq_usecols)
+    cont = read_excel_cached(cont_bytes, "ContabilidadSET_PLUS_datos", cont_usecols)
 except Exception as e:
     st.error(f"No pude leer los excels. Error: {e}")
     st.stop()
@@ -115,7 +151,8 @@ star_to_nombre = {}
 sac_to_nombre = {}
 
 if catalogo_file is not None:
-    catalogo = pd.read_excel(catalogo_file)
+    catalogo_bytes = catalogo_file.getvalue()
+    catalogo = read_catalogo_cached(catalogo_bytes)
 
     # Normaliza nombres de columnas del catálogo
     catalogo.columns = (
@@ -199,6 +236,17 @@ else:
 liq["IMPORTE"] = liq["IMPORTE"].apply(lambda x: norm_amount(x, ndigits))
 cont["IMPORTE"] = cont["IMPORTE"].apply(lambda x: norm_amount(x, ndigits))
 
+liq["IMPORTE"] = pd.to_numeric(liq["IMPORTE"], errors="coerce").astype("float32")
+cont["IMPORTE"] = pd.to_numeric(cont["IMPORTE"], errors="coerce").astype("float32")
+
+for col in ["PR", "VIAJE", "TIPO_PAGO", "UNIDAD", "OWNER_LIQ", "TIPO_CONCEPTO", "OWNER_STD_LIQ"]:
+    if col in liq.columns:
+        liq[col] = liq[col].astype("category")
+
+for col in ["PR", "VIAJE", "TIPO_PAGO", "UNIDAD", "OWNER_CONT", "TIPO_MOV", "OWNER_STD_CONT"]:
+    if col in cont.columns:
+        cont[col] = cont[col].astype("category")
+        
 # Regla de negocio (editable desde sidebar)
 liq_f = liq[liq["TIPO_CONCEPTO"] == liq_tipo].copy()
 cont_f = cont[cont["TIPO_MOV"] == cont_tipo].copy()
@@ -218,34 +266,15 @@ c4.metric("Contabilidad (filtrado)", len(cont_f))
 # Matching key (SIN owner) + consecutivo por duplicado
 key_cols = ["PR", "VIAJE", "UNIDAD", "TIPO_PAGO", "IMPORTE"]
 
-liq_k = build_seq(liq_f.copy(), key_cols, "_seq")
-cont_k = build_seq(cont_f.copy(), key_cols, "_seq")
+liq_k = build_seq(liq_f, key_cols, "_seq")
+cont_k = build_seq(cont_f, key_cols, "_seq")
 
-# Construcción de llave estable
-liq_k["_KEY"] = (
-    liq_k["PR"].fillna("").astype(str) + "||" +
-    liq_k["VIAJE"].fillna("").astype(str) + "||" +
-    liq_k["UNIDAD"].fillna("").astype(str) + "||" +
-    liq_k["TIPO_PAGO"].fillna("").astype(str) + "||" +
-    liq_k["IMPORTE"].fillna("").astype(str)
-)
+merge_keys = ["PR", "VIAJE", "UNIDAD", "TIPO_PAGO", "IMPORTE", "_seq"]
 
-cont_k["_KEY"] = (
-    cont_k["PR"].fillna("").astype(str) + "||" +
-    cont_k["VIAJE"].fillna("").astype(str) + "||" +
-    cont_k["UNIDAD"].fillna("").astype(str) + "||" +
-    cont_k["TIPO_PAGO"].fillna("").astype(str) + "||" +
-    cont_k["IMPORTE"].fillna("").astype(str)
-)
-
-liq_k["_KEYSEQ"] = liq_k["_KEY"] + "||SEQ=" + liq_k["_seq"].astype(str)
-cont_k["_KEYSEQ"] = cont_k["_KEY"] + "||SEQ=" + cont_k["_seq"].astype(str)
-
-# Exact merge by KEY+SEQ
 m = liq_k.merge(
     cont_k,
     how="outer",
-    on="_KEYSEQ",
+    on=merge_keys,
     suffixes=("_LIQ", "_CONT"),
     indicator=True
 )
@@ -319,11 +348,7 @@ with tabs_dup[0]:
         st.success("No hay filas duplicadas en Liquidaciones.")
     else:
         cols_liq_dup = [c for c in ["PR", "VIAJE", "UNIDAD", "TIPO_PAGO", "IMPORTE", "OWNER_LIQ"] if c in dup_liq.columns]
-        st.dataframe(
-            dup_liq[cols_liq_dup].sort_values(dup_key_cols),
-            use_container_width=True,
-            height=420
-        )
+        show_df(dup_liq[cols_liq_dup].sort_values(dup_key_cols), height=420)
 
 with tabs_dup[1]:
     if dup_liq_resumen.empty:
@@ -408,11 +433,7 @@ c2.metric("PR OK", (conc_pr["ESTATUS"] == "OK").sum())
 c3.metric("PR con diferencia de registros", (conc_pr["DIF_REG"] != 0).sum())
 c4.metric("PR con diferencia de importe", (conc_pr["DIF_IMPORTE"].abs() >= 0.0001).sum())
 
-st.dataframe(
-    conc_pr.sort_values(["ESTATUS", "PR"]),
-    use_container_width=True,
-    height=420
-)
+show_df(conc_pr.sort_values(["ESTATUS", "PR"]), height=420)
 
 # ----------------------------------------
 # Auditoría de exclusiones (desplegable)
@@ -525,7 +546,7 @@ with st.expander("🔎 Ver filtros aplicados (criterios)", expanded=False):
                 st.success("Sin filas en esta categoría.")
             else:
                 cols_ok = [c for c in cols_show if c in df_view.columns]
-                st.dataframe(df_view[cols_ok], use_container_width=True, height=420)
+                show_df(df_view[cols_ok], height=420, max_rows=int(max_rows))
     st.info(
         "Tip: si necesitas evidencia completa, también puedes incluir estas filas en el Excel descargable "
         "(pestañas Filtrados_Liquidaciones y Filtrados_Contabilidad)."
@@ -542,16 +563,16 @@ t1, t2, t3, t4 = st.tabs([
 ])
 
 with t1:
-    st.dataframe(ok_view, use_container_width=True, height=420)
+    show_df(ok_view, height=420)
 
 with t2:
-    st.dataframe(diff_view, use_container_width=True, height=420)
+    show_df(diff_view, height=420)
 
 with t3:
-    st.dataframe(liq_missing_view, use_container_width=True, height=420)
+    show_df(liq_missing_view, height=420)
 
 with t4:
-    st.dataframe(cont_missing_view, use_container_width=True, height=420)
+    show_df(cont_missing_view, height=420)
 
 # 2) Suggestions for unmatched (optional)
 suggestions_df = pd.DataFrame()
@@ -562,9 +583,14 @@ if enable_suggestions and (len(liq_missing_view) > 0 or len(cont_missing_view) >
     # relaxed key
     relaxed_cols = ["PR", "UNIDAD", "TIPO_PAGO", "IMPORTE"]
 
-    liq_u = liq_k[liq_k["_KEYSEQ"].isin(only_liq["_KEYSEQ"])].copy()
-    cont_u = cont_k[cont_k["_KEYSEQ"].isin(only_cont["_KEYSEQ"])].copy()
+    liq_u = only_liq[[c for c in only_liq.columns if c.endswith("_LIQ")]].copy()
+    cont_u = only_cont[[c for c in only_cont.columns if c.endswith("_CONT")]].copy()
 
+    liq_u.columns = [c.replace("_LIQ", "") for c in liq_u.columns]
+    cont_u.columns = [c.replace("_CONT", "") for c in cont_u.columns]
+
+    liq_u = liq_u[[c for c in ["PR", "VIAJE", "UNIDAD", "TIPO_PAGO", "IMPORTE", "OWNER_LIQ", "_seq"] if c in liq_u.columns]].copy()
+    cont_u = cont_u[[c for c in ["PR", "VIAJE", "UNIDAD", "TIPO_PAGO", "IMPORTE", "OWNER_CONT", "_seq"] if c in cont_u.columns]].copy()
     liq_u["_REL"] = (
         liq_u["PR"].fillna("").astype(str) + "||" +
         liq_u["UNIDAD"].fillna("").astype(str) + "||" +
@@ -579,6 +605,10 @@ if enable_suggestions and (len(liq_missing_view) > 0 or len(cont_missing_view) >
         cont_u["IMPORTE"].fillna("").astype(str)
     )
 
+    max_group_size = 20
+    liq_u = liq_u.groupby("_REL", dropna=False).head(max_group_size).copy()
+    cont_u = cont_u.groupby("_REL", dropna=False).head(max_group_size).copy()
+    
     # Build candidates: join by relaxed key
     cand = liq_u.merge(cont_u, how="inner", on="_REL", suffixes=("_LIQ", "_CONT"))
     if len(cand) > 0:
@@ -588,7 +618,10 @@ if enable_suggestions and (len(liq_missing_view) > 0 or len(cont_missing_view) >
         cand = cand.sort_values(by=["SAME_VIAJE", "OWNER_MATCH"], ascending=[False, False])
 
         # cap suggestions per each LIQ row
-        cand["_rank"] = cand.groupby("_KEYSEQ_LIQ").cumcount() + 1
+        cand["_rank"] = cand.groupby(
+            ["PR_LIQ", "VIAJE_LIQ", "UNIDAD_LIQ", "TIPO_PAGO_LIQ", "IMPORTE_LIQ"],
+            dropna=False
+        ).cumcount() + 1
         cand = cand[cand["_rank"] <= suggestions_limit].copy()
 
         suggestions_df = cand[[
@@ -597,7 +630,7 @@ if enable_suggestions and (len(liq_missing_view) > 0 or len(cont_missing_view) >
             "SAME_VIAJE","OWNER_MATCH","_rank"
         ]].copy()
 
-        st.dataframe(suggestions_df, use_container_width=True, height=420)
+        show_df(suggestions_df, height=420)
     else:
         st.info("No encontré candidatos bajo el criterio relajado (PR+Unidad+TipoPago+Importe).")
 
@@ -630,11 +663,18 @@ sheets = {
 if enable_suggestions:
     sheets["Suggestions_Relaxed"] = suggestions_df
 
-xlsx_bytes = to_excel_bytes(sheets)
-st.download_button(
-    "⬇️ Descargar reporte de confronta (Excel)",
-    data=xlsx_bytes,
-    file_name="reporte_confronta_star.xlsx",
-    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-)
+prepare_excel = st.button("Preparar archivo Excel")
+
+if prepare_excel:
+    with st.spinner("Generando Excel..."):
+        xlsx_bytes = build_excel_cached(sheets)
+
+    st.download_button(
+        "⬇️ Descargar reporte de confronta (Excel)",
+        data=xlsx_bytes,
+        file_name="reporte_confronta_star.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+else:
+    st.info("Da clic en 'Preparar archivo Excel' cuando ya hayas terminado de revisar.")
 
