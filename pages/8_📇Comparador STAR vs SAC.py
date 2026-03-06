@@ -192,90 +192,30 @@ c4.metric("Contabilidad (filtrado)", len(cont_f))
 # Matching key (SIN owner) + consecutivo por duplicado
 key_cols = ["PR", "VIAJE", "UNIDAD", "TIPO_PAGO", "IMPORTE"]
 
-st.divider()
-st.subheader("🔁 Registros duplicados detectados")
+liq_k = build_seq(liq_f.copy(), key_cols, "_seq")
+cont_k = build_seq(cont_f.copy(), key_cols, "_seq")
 
-dup_liq = liq_f[liq_f.duplicated(subset=key_cols, keep=False)].copy()
-dup_cont = cont_f[cont_f.duplicated(subset=key_cols, keep=False)].copy()
-
-c1, c2 = st.columns(2)
-
-with c1:
-    st.metric("Duplicados en Liquidaciones", len(dup_liq))
-
-with c2:
-    st.metric("Duplicados en Contabilidad", len(dup_cont))
-
-tab1, tab2 = st.tabs(["Duplicados Liquidaciones", "Duplicados Contabilidad"])
-
-with tab1:
-    if len(dup_liq) == 0:
-        st.success("No hay duplicados en Liquidaciones")
-    else:
-        st.dataframe(dup_liq, use_container_width=True)
-
-with tab2:
-    if len(dup_cont) == 0:
-        st.success("No hay duplicados en Contabilidad")
-    else:
-        st.dataframe(dup_cont, use_container_width=True)
-
-liq_k = build_seq(liq_f, key_cols, "_seq")
-cont_k = build_seq(cont_f, key_cols, "_seq")
-
-# Validar que existan las columnas clave
-faltan_liq = [c for c in key_cols if c not in liq_k.columns]
-faltan_cont = [c for c in key_cols if c not in cont_k.columns]
-
-for c in ["PR", "VIAJE", "UNIDAD", "TIPO_PAGO", "IMPORTE"]:
-    if c not in liq_k.columns:
-        st.error(f"Liquidaciones no tiene la columna clave: {c}")
-        st.stop()
-    if c not in cont_k.columns:
-        st.error(f"Contabilidad no tiene la columna clave: {c}")
-        st.stop()
-        
-if faltan_liq:
-    st.error(f"En Liquidaciones faltan columnas clave para comparar: {faltan_liq}")
-    st.stop()
-
-if faltan_cont:
-    st.error(f"En Contabilidad faltan columnas clave para comparar: {faltan_cont}")
-    st.stop()
-
-# Detectar columnas duplicadas (NO filas, solo columnas)
-dup_cols_liq = liq_k.columns[liq_k.columns.duplicated()].tolist()
-dup_cols_cont = cont_k.columns[cont_k.columns.duplicated()].tolist()
-
-if dup_cols_liq or dup_cols_cont:
-    st.error(
-        f"Hay columnas duplicadas. "
-        f"Liquidaciones: {dup_cols_liq if dup_cols_liq else 'ninguna'} | "
-        f"Contabilidad: {dup_cols_cont if dup_cols_cont else 'ninguna'}"
-    )
-    st.stop()
-
-# Construcción segura de llave (sin apply sobre DataFrame)
+# Construcción de llave estable
 liq_k["_KEY"] = (
-    liq_k["PR"].astype(str).fillna("") + "||" +
-    liq_k["VIAJE"].astype(str).fillna("") + "||" +
-    liq_k["UNIDAD"].astype(str).fillna("") + "||" +
-    liq_k["TIPO_PAGO"].astype(str).fillna("") + "||" +
-    liq_k["IMPORTE"].astype(str).fillna("")
+    liq_k["PR"].fillna("").astype(str) + "||" +
+    liq_k["VIAJE"].fillna("").astype(str) + "||" +
+    liq_k["UNIDAD"].fillna("").astype(str) + "||" +
+    liq_k["TIPO_PAGO"].fillna("").astype(str) + "||" +
+    liq_k["IMPORTE"].fillna("").astype(str)
 )
 
 cont_k["_KEY"] = (
-    cont_k["PR"].astype(str).fillna("") + "||" +
-    cont_k["VIAJE"].astype(str).fillna("") + "||" +
-    cont_k["UNIDAD"].astype(str).fillna("") + "||" +
-    cont_k["TIPO_PAGO"].astype(str).fillna("") + "||" +
-    cont_k["IMPORTE"].astype(str).fillna("")
+    cont_k["PR"].fillna("").astype(str) + "||" +
+    cont_k["VIAJE"].fillna("").astype(str) + "||" +
+    cont_k["UNIDAD"].fillna("").astype(str) + "||" +
+    cont_k["TIPO_PAGO"].fillna("").astype(str) + "||" +
+    cont_k["IMPORTE"].fillna("").astype(str)
 )
 
 liq_k["_KEYSEQ"] = liq_k["_KEY"] + "||SEQ=" + liq_k["_seq"].astype(str)
 cont_k["_KEYSEQ"] = cont_k["_KEY"] + "||SEQ=" + cont_k["_seq"].astype(str)
 
-# 1) Exact merge by KEY+SEQ
+# Exact merge by KEY+SEQ
 m = liq_k.merge(
     cont_k,
     how="outer",
@@ -284,28 +224,22 @@ m = liq_k.merge(
     indicator=True
 )
 
-# Split outputs
 matched = m[m["_merge"] == "both"].copy()
 only_liq = m[m["_merge"] == "left_only"].copy()
 only_cont = m[m["_merge"] == "right_only"].copy()
 
-# Owner discrepancy flag on matched
 matched["OWNER_MATCH"] = matched["OWNER_LIQ"].fillna("") == matched["OWNER_CONT"].fillna("")
 matched["DIF_OWNER"] = ~matched["OWNER_MATCH"]
 
 matches_ok = matched[matched["DIF_OWNER"] == False].copy()
 matches_owner_diff = matched[matched["DIF_OWNER"] == True].copy()
 
-# Make them pretty (select columns)
 def pick_cols(df: pd.DataFrame, side: str) -> list[str]:
-    # side: "LIQ" or "CONT"
     cols = []
     for c in ["PR", "VIAJE", "UNIDAD", "TIPO_PAGO", "IMPORTE"]:
         cand = f"{c}_{side}"
         if cand in df.columns:
             cols.append(cand)
-        elif c in df.columns:
-            cols.append(c)
     owner = f"OWNER_{side}"
     if owner in df.columns:
         cols.append(owner)
@@ -313,113 +247,8 @@ def pick_cols(df: pd.DataFrame, side: str) -> list[str]:
 
 ok_view = matches_ok[pick_cols(matches_ok, "LIQ") + pick_cols(matches_ok, "CONT")].copy()
 diff_view = matches_owner_diff[pick_cols(matches_owner_diff, "LIQ") + pick_cols(matches_owner_diff, "CONT")].copy()
-
 liq_missing_view = only_liq[pick_cols(only_liq, "LIQ")].copy()
 cont_missing_view = only_cont[pick_cols(only_cont, "CONT")].copy()
-
-# ----------------------------------------
-# Conciliación por PR
-# ----------------------------------------
-st.divider()
-st.subheader("📊 Conciliación por PR")
-
-liq_pr = (
-    liq_f.groupby("PR", dropna=False)
-    .agg(
-        REG_LIQ=("PR", "size"),
-        IMPORTE_LIQ=("IMPORTE", "sum")
-    )
-    .reset_index()
-)
-
-cont_pr = (
-    cont_f.groupby("PR", dropna=False)
-    .agg(
-        REG_CONT=("PR", "size"),
-        IMPORTE_CONT=("IMPORTE", "sum")
-    )
-    .reset_index()
-)
-
-conc_pr = liq_pr.merge(cont_pr, on="PR", how="outer").fillna(0)
-
-conc_pr["REG_LIQ"] = conc_pr["REG_LIQ"].astype(int)
-conc_pr["REG_CONT"] = conc_pr["REG_CONT"].astype(int)
-conc_pr["DIF_REG"] = conc_pr["REG_LIQ"] - conc_pr["REG_CONT"]
-conc_pr["DIF_IMPORTE"] = conc_pr["IMPORTE_LIQ"] - conc_pr["IMPORTE_CONT"]
-
-def clasifica_pr(row):
-    if row["REG_LIQ"] == row["REG_CONT"] and row["DIF_IMPORTE"] == 0:
-        return "OK"
-    if row["REG_LIQ"] != row["REG_CONT"] and row["DIF_IMPORTE"] == 0:
-        return "MISMO IMPORTE / DIF REGISTROS"
-    if row["REG_LIQ"] == row["REG_CONT"] and row["DIF_IMPORTE"] != 0:
-        return "MISMO NUM REG / DIF IMPORTE"
-    return "REVISAR"
-
-conc_pr["ESTATUS"] = conc_pr.apply(clasifica_pr, axis=1)
-
-st.dataframe(conc_pr.sort_values(["ESTATUS", "PR"]), use_container_width=True, height=420)
-
-# ----------------------------------------
-# Diferencias por criterio dentro del mismo PR
-# ----------------------------------------
-st.divider()
-st.subheader("🧭 Diferencias por criterio (mismo PR)")
-
-liq_unmatched_pr = liq_k[liq_k["_KEYSEQ"].isin(only_liq["_KEYSEQ"])].copy()
-cont_unmatched_pr = cont_k[cont_k["_KEYSEQ"].isin(only_cont["_KEYSEQ"])].copy()
-
-diff_candidates = liq_unmatched_pr.merge(
-    cont_unmatched_pr,
-    on="PR",
-    how="inner",
-    suffixes=("_LIQ", "_CONT")
-)
-
-diffs_df = pd.DataFrame()
-
-if len(diff_candidates) > 0:
-    diff_candidates["MATCH_VIAJE"] = diff_candidates["VIAJE_LIQ"].fillna("") == diff_candidates["VIAJE_CONT"].fillna("")
-    diff_candidates["MATCH_UNIDAD"] = diff_candidates["UNIDAD_LIQ"].fillna("") == diff_candidates["UNIDAD_CONT"].fillna("")
-    diff_candidates["MATCH_TIPO_PAGO"] = diff_candidates["TIPO_PAGO_LIQ"].fillna("") == diff_candidates["TIPO_PAGO_CONT"].fillna("")
-    diff_candidates["MATCH_IMPORTE"] = diff_candidates["IMPORTE_LIQ"].fillna(0) == diff_candidates["IMPORTE_CONT"].fillna(0)
-    diff_candidates["MATCH_OWNER"] = diff_candidates["OWNER_LIQ"].fillna("") == diff_candidates["OWNER_CONT"].fillna("")
-
-    def etiquetar_diferencia(row):
-        difs = []
-        if not row["MATCH_VIAJE"]:
-            difs.append("VIAJE")
-        if not row["MATCH_UNIDAD"]:
-            difs.append("UNIDAD")
-        if not row["MATCH_TIPO_PAGO"]:
-            difs.append("TIPO_PAGO")
-        if not row["MATCH_IMPORTE"]:
-            difs.append("IMPORTE")
-        if not row["MATCH_OWNER"]:
-            difs.append("OWNER")
-
-        if len(difs) == 0:
-            return "SIN DIFERENCIA"
-        if len(difs) == 1:
-            return f"SOLO_{difs[0]}"
-        return "MULTIPLES: " + ", ".join(difs)
-
-    diff_candidates["TIPO_DIFERENCIA"] = diff_candidates.apply(etiquetar_diferencia, axis=1)
-
-    diffs_df = diff_candidates[[
-        "PR",
-        "VIAJE_LIQ", "VIAJE_CONT",
-        "UNIDAD_LIQ", "UNIDAD_CONT",
-        "TIPO_PAGO_LIQ", "TIPO_PAGO_CONT",
-        "IMPORTE_LIQ", "IMPORTE_CONT",
-        "OWNER_LIQ", "OWNER_CONT",
-        "TIPO_DIFERENCIA"
-    ]].copy()
-
-    st.dataframe(diffs_df.sort_values(["PR", "TIPO_DIFERENCIA"]), use_container_width=True, height=420)
-else:
-    st.info("No encontré candidatos con el mismo PR para analizar diferencias por criterio.")
     
 # ----------------------------------------
 # Auditoría de exclusiones (desplegable)
@@ -562,8 +391,6 @@ sheets = {
     "Matched_Owner_Diff": diff_view,
     "Missing_in_Contabilidad": liq_missing_view,
     "Missing_in_Liquidaciones": cont_missing_view,
-    "Conciliacion_PR": conc_pr,
-    "Diferencias_Criterio": diffs_df,
     "Filtrados_Liquidaciones": liq_excl,
     "Filtrados_Contabilidad": cont_excl,
     "Criterios_Filtro": pd.DataFrame({
