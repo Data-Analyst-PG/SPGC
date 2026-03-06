@@ -101,8 +101,8 @@ liq_usecols = ["Liquidacion", "Numero_Viaje", "TipoPago", "Monto", "Unidad", "Op
 cont_usecols = ["Factura", "Referencia", "TipoPago", "Importe", "Unidad", "NombreCuentaContable", "TipoMovimiento"]
 
 try:
-    liq = pd.read_excel(liq_file, sheet_name=LiquidacionesSET_PLUS_datos, usecols=liq_usecols)
-    cont = pd.read_excel(cont_file, sheet_name=ContabilidadSET_PLUS_datos, usecols=cont_usecols)
+    liq = pd.read_excel(liq_file, sheet_name="LiquidacionesSET_PLUS_datos", usecols=liq_usecols)
+    cont = pd.read_excel(cont_file, sheet_name="ContabilidadSET_PLUS_datos", usecols=cont_usecols)
 except Exception as e:
     st.error(f"No pude leer los excels. Error: {e}")
     st.stop()
