@@ -31,7 +31,11 @@ def build_seq(df: pd.DataFrame, key_cols: list[str], seq_col: str = "_seq") -> p
 
 def to_excel_bytes(sheets: dict[str, pd.DataFrame]) -> bytes:
     bio = BytesIO()
-    with pd.ExcelWriter(bio, engine="openpyxl") as writer:
+    with pd.ExcelWriter(
+        bio,
+        engine="xlsxwriter",
+        engine_kwargs={"options": {"constant_memory": True}}
+    ) as writer:
         for name, d in sheets.items():
             d.to_excel(writer, sheet_name=name[:31], index=False)
     bio.seek(0)
@@ -45,8 +49,7 @@ def read_excel_cached(file_bytes: bytes, sheet_name: str, usecols: list[str]) ->
 def read_catalogo_cached(file_bytes: bytes) -> pd.DataFrame:
     return pd.read_excel(BytesIO(file_bytes))
 
-@st.cache_data(show_spinner=False)
-def build_excel_cached(sheets: dict[str, pd.DataFrame]) -> bytes:
+def build_excel_bytes(sheets: dict[str, pd.DataFrame]) -> bytes:
     return to_excel_bytes(sheets)
 
 def show_df(df: pd.DataFrame, height: int = 420, max_rows: int = 2000):
@@ -57,7 +60,33 @@ def show_df(df: pd.DataFrame, height: int = 420, max_rows: int = 2000):
         st.dataframe(df.head(max_rows), use_container_width=True, height=height)
     else:
         st.dataframe(df, use_container_width=True, height=height)
-        
+def prepare_df_for_excel(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+
+    # Evitar nombres duplicados de columnas
+    if out.columns.duplicated().any():
+        new_cols = []
+        seen = {}
+        for c in out.columns:
+            if c not in seen:
+                seen[c] = 0
+                new_cols.append(c)
+            else:
+                seen[c] += 1
+                new_cols.append(f"{c}_{seen[c]}")
+        out.columns = new_cols
+
+    # Convertir category/string extension a object normal para exportar más estable
+    for col in out.columns:
+        try:
+            if str(out[col].dtype) == "category":
+                out[col] = out[col].astype("string").fillna("")
+            elif "string" in str(out[col].dtype):
+                out[col] = out[col].fillna("")
+        except Exception:
+            pass
+
+    return out      
 # -----------------------------
 # UI
 # -----------------------------
@@ -724,6 +753,7 @@ sheets = {
         ]
     }),
 }
+export_sheets = {name: prepare_df_for_excel(df) for name, df in sheets.items()}
 if enable_suggestions:
     sheets["Suggestions_Relaxed"] = suggestions_df
 
@@ -732,7 +762,7 @@ if "xlsx_bytes" not in st.session_state:
 
 if st.button("Preparar archivo Excel"):
     with st.spinner("Generando Excel..."):
-        st.session_state.xlsx_bytes = build_excel_cached(sheets)
+        st.session_state.xlsx_bytes = build_excel_bytes(export_sheets)
 
 if st.session_state.xlsx_bytes is not None:
     st.download_button(
