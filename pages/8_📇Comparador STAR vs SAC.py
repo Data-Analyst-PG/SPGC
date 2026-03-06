@@ -70,6 +70,7 @@ with st.sidebar:
 
     st.divider()
     st.header("Catálogo de operadores")
+    st.caption("Podrás seleccionar uno o varios tipos del catálogo después de cargar el archivo.")
 
     catalogo_file = st.file_uploader(
         "Catálogo operadores / owners",
@@ -77,11 +78,8 @@ with st.sidebar:
         help="Archivo con columnas NOMBRE, Usuario STAR, Usuario SAC y Tipo"
     )
 
-    solo_owner = st.checkbox(
-        "Mostrar solo registros de Owners",
-        value=True
-    )
-
+    tipos_catalogo_seleccionados = []
+    
     st.divider()
     st.header("Reglas de comparación")
 
@@ -123,7 +121,7 @@ current_signature = (
     (liq_file.name, len(liq_file.getvalue())) if liq_file else ("", 0),
     (cont_file.name, len(cont_file.getvalue())) if cont_file else ("", 0),
     (catalogo_file.name, len(catalogo_file.getvalue())) if catalogo_file else ("", 0),
-    solo_owner,
+    tuple(sorted(tipos_catalogo_seleccionados)),
     ndigits,
     liq_tipo,
     cont_tipo,
@@ -201,8 +199,17 @@ if catalogo_file is not None:
     for col in ["NOMBRE", "USUARIO_STAR", "USUARIO_SAC", "TIPO"]:
         catalogo[col] = catalogo[col].apply(norm_text)
 
-    if solo_owner:
-        catalogo = catalogo[catalogo["TIPO"] == "OWNER"].copy()
+    tipos_disponibles = sorted([t for t in catalogo["TIPO"].dropna().unique().tolist() if t != ""])
+
+    tipos_catalogo_seleccionados = st.sidebar.multiselect(
+        "Tipos del catálogo a considerar",
+        options=tipos_disponibles,
+        default=["OWNER"] if "OWNER" in tipos_disponibles else tipos_disponibles,
+        help="Selecciona uno o varios tipos del catálogo para filtrar los registros."
+    )
+
+    if len(tipos_catalogo_seleccionados) > 0:
+        catalogo = catalogo[catalogo["TIPO"].isin(tipos_catalogo_seleccionados)].copy()
 
     star_to_nombre = dict(
         catalogo.loc[catalogo["USUARIO_STAR"] != "", ["USUARIO_STAR", "NOMBRE"]].values
@@ -246,7 +253,8 @@ if catalogo_file is not None:
     liq["OWNER_STD_LIQ"] = liq["OWNER_LIQ"].map(star_to_nombre).fillna("")
     cont["OWNER_STD_CONT"] = cont["OWNER_CONT"].map(sac_to_nombre).fillna("")
 
-    st.sidebar.caption(f"Filas catálogo después de filtro OWNER: {len(catalogo)}")
+    st.sidebar.caption(f"Filas catálogo después de filtro por tipo: {len(catalogo)}")
+    st.sidebar.caption(f"Tipos seleccionados: {', '.join(tipos_catalogo_seleccionados) if tipos_catalogo_seleccionados else 'Todos'}")
     st.sidebar.caption(f"Matches STAR en catálogo: {(liq['OWNER_STD_LIQ'] != '').sum()}")
     st.sidebar.caption(f"Matches SAC en catálogo: {(cont['OWNER_STD_CONT'] != '').sum()}")
 else:
@@ -271,8 +279,10 @@ for col in ["PR", "VIAJE", "TIPO_PAGO", "UNIDAD", "TIPO_MOV"]:
 liq_f = liq[liq["TIPO_CONCEPTO"] == liq_tipo].copy()
 cont_f = cont[cont["TIPO_MOV"] == cont_tipo].copy()
 
-# Filtrar solo registros que estén en el catálogo (owners)
-if solo_owner and catalogo_file is not None:
+# Filtrar solo registros que estén en el catálogo
+filtro_catalogo_activo = catalogo_file is not None and len(tipos_catalogo_seleccionados) > 0
+
+if filtro_catalogo_activo:
     liq_f = liq_f[liq_f["OWNER_STD_LIQ"] != ""].copy()
     cont_f = cont_f[cont_f["OWNER_STD_CONT"] != ""].copy()
     
@@ -490,7 +500,7 @@ liq_excl_tipo = liq[liq["TIPO_CONCEPTO"] != liq_tipo].copy()
 cont_excl_tipo = cont[cont["TIPO_MOV"] != cont_tipo].copy()
 
 # 2) Excluidos por catálogo owner (solo sobre los que sí pasaron el filtro de tipo)
-if solo_owner and catalogo_file is not None:
+if filtro_catalogo_activo:
     liq_excl_owner = liq[
         (liq["TIPO_CONCEPTO"] == liq_tipo) &
         (liq["OWNER_STD_LIQ"] == "")
@@ -521,22 +531,22 @@ with st.expander("🔎 Ver filtros aplicados (criterios)", expanded=False):
     st.write(f"- Liquidaciones: **TIPO_CONCEPTO = '{liq_tipo}'**")
     st.write(f"- Contabilidad: **TIPO_MOV = '{cont_tipo}'**")
 
-    if solo_owner and catalogo_file is not None:
-        st.write("- Catálogo: **solo registros con owner encontrado en catálogo**")
+    if filtro_catalogo_activo:
+        st.write(f"- Catálogo: **filtrado por tipos seleccionados: {', '.join(tipos_catalogo_seleccionados)}**")
     else:
-        st.write("- Catálogo: **sin filtro por owner**")
+        st.write("- Catálogo: **sin filtro por catálogo**")
 
     st.divider()
     st.markdown("### Resumen de exclusiones")
 
     c1, c2, c3 = st.columns(3)
     c1.metric("Liquidaciones excluidas por tipo", len(liq_excl_tipo))
-    c2.metric("Liquidaciones excluidas por owner", len(liq_excl_owner))
+    c2.metric("Liquidaciones excluidas por catálogo", len(liq_excl_owner))
     c3.metric("Liquidaciones excluidas total", len(liq_excl_total))
 
     c4, c5, c6 = st.columns(3)
     c4.metric("Contabilidad excluida por tipo", len(cont_excl_tipo))
-    c5.metric("Contabilidad excluida por owner", len(cont_excl_owner))
+    c5.metric("Contabilidad excluida por catálogo", len(cont_excl_owner))
     c6.metric("Contabilidad excluida total", len(cont_excl_total))
 
     st.divider()
@@ -566,10 +576,10 @@ with st.expander("🔎 Ver filtros aplicados (criterios)", expanded=False):
 
     tabs = st.tabs([
         f"Liq excluidas por tipo ({len(liq_excl_tipo)})",
-        f"Liq excluidas por owner ({len(liq_excl_owner)})",
+        f"Liq excluidas por catálogo ({len(liq_excl_owner)})",
         f"Liq excluidas total ({len(liq_excl_total)})",
         f"Cont excluidas por tipo ({len(cont_excl_tipo)})",
-        f"Cont excluidas por owner ({len(cont_excl_owner)})",
+        f"Cont excluidas por catálogo ({len(cont_excl_owner)})",
         f"Cont excluidas total ({len(cont_excl_total)})",
     ])
 
@@ -709,7 +719,8 @@ sheets = {
         "criterio": [
             f"Liquidaciones: TIPO_CONCEPTO = '{liq_tipo}'",
             f"Contabilidad: TIPO_MOV = '{cont_tipo}'",
-            f"Filtro owner activo: {solo_owner}",
+            f"Filtro catálogo activo: {filtro_catalogo_activo}",
+            f"Tipos catálogo seleccionados: {', '.join(tipos_catalogo_seleccionados) if tipos_catalogo_seleccionados else 'Todos'}",
         ]
     }),
 }
