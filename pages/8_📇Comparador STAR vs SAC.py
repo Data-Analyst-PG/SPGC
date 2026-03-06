@@ -48,6 +48,20 @@ with st.sidebar:
     cont_file = st.file_uploader("Excel Contabilidad", type=["xlsx"])
 
     st.divider()
+    st.header("Catálogo de operadores")
+
+    catalogo_file = st.file_uploader(
+        "Catálogo operadores / owners",
+        type=["xlsx"],
+        help="Archivo con columnas NOMBRE, Usuario STAR, Usuario SAC y Tipo"
+    )
+
+    solo_owner = st.checkbox(
+        "Mostrar solo registros de Owners",
+        value=True
+    )
+
+    st.divider()
     st.header("Reglas de comparación")
 
     ndigits = st.number_input(
@@ -59,14 +73,14 @@ with st.sidebar:
 
     liq_tipo = st.selectbox(
         "Liquidaciones: Tipo_Concepto a considerar",
-        options=["E", "D", "I"],
+        options=["E", "I"],
         index=0,  # por default E
         help="Solo se compararán filas de Liquidaciones con este Tipo_Concepto"
     )
 
     cont_tipo = st.selectbox(
         "Contabilidad: TipoMovimiento a considerar",
-        options=["H", "D", "I"],
+        options=["H", "D"],
         index=0,  # por default H
         help="Solo se compararán filas de Contabilidad con este TipoMovimiento"
     )
@@ -93,6 +107,33 @@ except Exception as e:
     st.error(f"No pude leer los excels. Error: {e}")
     st.stop()
 
+# -----------------------------
+# Catálogo de operadores
+# -----------------------------
+catalogo = None
+star_to_nombre = {}
+sac_to_nombre = {}
+
+if catalogo_file is not None:
+    catalogo = pd.read_excel(catalogo_file)
+
+    for col in ["NOMBRE", "Usuario STAR", "Usuario SAC", "Tipo"]:
+        if col in catalogo.columns:
+            catalogo[col] = catalogo[col].apply(norm_text)
+
+    if solo_owner:
+        catalogo = catalogo[catalogo["Tipo"] == "OWNER"]
+
+    if "Usuario STAR" in catalogo.columns:
+        star_to_nombre = dict(
+            catalogo.loc[catalogo["Usuario STAR"] != "", ["Usuario STAR", "NOMBRE"]].values
+        )
+
+    if "Usuario SAC" in catalogo.columns:
+        sac_to_nombre = dict(
+            catalogo.loc[catalogo["Usuario SAC"] != "", ["Usuario SAC", "NOMBRE"]].values
+        )
+        
 # Normalize
 liq = liq.rename(columns={
     "Liquidacion": "PR",
@@ -121,6 +162,14 @@ for c in ["PR", "VIAJE", "TIPO_PAGO", "UNIDAD", "OWNER_CONT", "TIPO_MOV"]:
     if c in cont.columns:
         cont[c] = cont[c].apply(norm_text)
 
+# Owner estándar según catálogo
+if catalogo_file is not None:
+    liq["OWNER_STD_LIQ"] = liq["OWNER_LIQ"].map(star_to_nombre).fillna("")
+    cont["OWNER_STD_CONT"] = cont["OWNER_CONT"].map(sac_to_nombre).fillna("")
+else:
+    liq["OWNER_STD_LIQ"] = ""
+    cont["OWNER_STD_CONT"] = ""
+    
 liq["IMPORTE"] = liq["IMPORTE"].apply(lambda x: norm_amount(x, ndigits))
 cont["IMPORTE"] = cont["IMPORTE"].apply(lambda x: norm_amount(x, ndigits))
 
@@ -128,6 +177,11 @@ cont["IMPORTE"] = cont["IMPORTE"].apply(lambda x: norm_amount(x, ndigits))
 liq_f = liq[liq["TIPO_CONCEPTO"] == liq_tipo].copy()
 cont_f = cont[cont["TIPO_MOV"] == cont_tipo].copy()
 
+# Filtrar solo registros que estén en el catálogo (owners)
+if solo_owner and catalogo_file is not None:
+    liq_f = liq_f[liq_f["OWNER_STD_LIQ"] != ""].copy()
+    cont_f = cont_f[cont_f["OWNER_STD_CONT"] != ""].copy()
+    
 st.subheader("Resumen de carga")
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("Liquidaciones (original)", len(liq))
