@@ -304,7 +304,10 @@ liq_excl_total = liq.loc[~liq.index.isin(liq_f.index)].copy()
 cont_excl_total = cont.loc[~cont.index.isin(cont_f.index)].copy()
 
 # Orden opcional para que sea más fácil revisar
-for df in (liq_excl, cont_excl):
+for df in (
+    liq_excl_tipo, liq_excl_owner, liq_excl_total,
+    cont_excl_tipo, cont_excl_owner, cont_excl_total
+):
     if "PR" in df.columns and "VIAJE" in df.columns:
         df.sort_values(by=["PR", "VIAJE", "UNIDAD", "TIPO_PAGO"], inplace=True, kind="stable")
 
