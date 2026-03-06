@@ -37,6 +37,13 @@ def to_excel_bytes(sheets: dict[str, pd.DataFrame]) -> bytes:
     bio.seek(0)
     return bio.getvalue()
 
+def apply_exclusions(df: pd.DataFrame, col: str, patterns: list[str]) -> pd.DataFrame:
+    if not patterns:
+        return df
+    rx = re.compile("|".join([f"({p})" for p in patterns]), re.IGNORECASE)
+    mask = ~df[col].fillna("").astype(str).apply(lambda s: bool(rx.search(s)))
+    return df.loc[mask].copy()
+
 # -----------------------------
 # UI
 # -----------------------------
@@ -48,42 +55,21 @@ with st.sidebar:
     cont_file = st.file_uploader("Excel Contabilidad", type=["xlsx"])
 
     st.divider()
-    st.header("Catálogo de operadores")
-
-    catalogo_file = st.file_uploader(
-        "Catálogo operadores / owners",
-        type=["xlsx"],
-        help="Archivo con columnas NOMBRE, Usuario STAR, Usuario SAC y Tipo"
-    )
-
-    solo_owner = st.checkbox(
-        "Mostrar solo registros de Owners",
-        value=True
-    )
-
-    st.divider()
     st.header("Reglas de comparación")
 
-    ndigits = st.number_input(
-        "Redondeo de importe (decimales)",
-        min_value=0, max_value=4, value=2, step=1
-    )
-    st.divider()
-    st.header("Filtros por tipo")
+    ndigits = st.number_input("Redondeo de importe (decimales)", min_value=0, max_value=4, value=2, step=1)
 
-    liq_tipo = st.selectbox(
-        "Liquidaciones: Tipo_Concepto a considerar",
-        options=["E", "I"],
-        index=0,  # por default E
-        help="Solo se compararán filas de Liquidaciones con este Tipo_Concepto"
+    st.caption("Exclusiones (regex). Ejemplos típicos:")
+    default_exclusions = [
+        r"CARGOS ADICIONALES",
+        r"CT\.\s*PAGO\s*X\s*MILLAS",
+    ]
+    exclusions = st.text_area(
+        "Patrones a IGNORAR (uno por línea)",
+        value="\n".join(default_exclusions),
+        height=120
     )
-
-    cont_tipo = st.selectbox(
-        "Contabilidad: TipoMovimiento a considerar",
-        options=["H", "D"],
-        index=0,  # por default H
-        help="Solo se compararán filas de Contabilidad con este TipoMovimiento"
-    )
+    exclusion_patterns = [p.strip() for p in exclusions.splitlines() if p.strip()]
 
     st.caption("Sugerencias: si no encuentra exacto, busca por PR+Unidad+TipoPago+Importe (ignorando Viaje).")
     enable_suggestions = st.checkbox("Generar sugerencias para no-matcheados", value=True)
@@ -97,43 +83,16 @@ if not liq_file or not cont_file:
     st.stop()
 
 # Column mapping (según tus archivos)
-liq_usecols = ["Liquidacion", "Numero_Viaje", "TipoPago", "Monto", "Unidad", "Operador", "Tipo_Concepto"]
-cont_usecols = ["Factura", "Referencia", "TipoPago", "Importe", "Unidad", "NombreCuentaContable", "TipoMovimiento"]
+liq_usecols = ["Liquidacion", "Numero_Viaje", "TipoPago", "Monto", "Unidad", "Operador"]
+cont_usecols = ["Factura", "Referencia", "TipoPago", "Importe", "Unidad", "NombreCuentaContable"]
 
 try:
-    liq = pd.read_excel(liq_file, sheet_name="LiquidacionesSET_PLUS_datos", usecols=liq_usecols)
-    cont = pd.read_excel(cont_file, sheet_name="ContabilidadSET_PLUS_datos", usecols=cont_usecols)
+    liq = pd.read_excel(liq_file, sheet_name=0, usecols=liq_usecols)
+    cont = pd.read_excel(cont_file, sheet_name=0, usecols=cont_usecols)
 except Exception as e:
     st.error(f"No pude leer los excels. Error: {e}")
     st.stop()
 
-# -----------------------------
-# Catálogo de operadores
-# -----------------------------
-catalogo = None
-star_to_nombre = {}
-sac_to_nombre = {}
-
-if catalogo_file is not None:
-    catalogo = pd.read_excel(catalogo_file)
-
-    for col in ["NOMBRE", "Usuario STAR", "Usuario SAC", "Tipo"]:
-        if col in catalogo.columns:
-            catalogo[col] = catalogo[col].apply(norm_text)
-
-    if solo_owner:
-        catalogo = catalogo[catalogo["Tipo"] == "OWNER"]
-
-    if "Usuario STAR" in catalogo.columns:
-        star_to_nombre = dict(
-            catalogo.loc[catalogo["Usuario STAR"] != "", ["Usuario STAR", "NOMBRE"]].values
-        )
-
-    if "Usuario SAC" in catalogo.columns:
-        sac_to_nombre = dict(
-            catalogo.loc[catalogo["Usuario SAC"] != "", ["Usuario SAC", "NOMBRE"]].values
-        )
-        
 # Normalize
 liq = liq.rename(columns={
     "Liquidacion": "PR",
@@ -142,7 +101,6 @@ liq = liq.rename(columns={
     "Monto": "IMPORTE",
     "Unidad": "UNIDAD",
     "Operador": "OWNER_LIQ",
-    "Tipo_Concepto": "TIPO_CONCEPTO",
 })
 cont = cont.rename(columns={
     "Factura": "PR",
@@ -151,37 +109,23 @@ cont = cont.rename(columns={
     "Importe": "IMPORTE",
     "Unidad": "UNIDAD",
     "NombreCuentaContable": "OWNER_CONT",
-    "TipoMovimiento": "TIPO_MOV",
 })
 
-for c in ["PR", "VIAJE", "TIPO_PAGO", "UNIDAD", "OWNER_LIQ", "TIPO_CONCEPTO"]:
+for c in ["PR", "VIAJE", "TIPO_PAGO", "UNIDAD", "OWNER_LIQ"]:
     if c in liq.columns:
         liq[c] = liq[c].apply(norm_text)
 
-for c in ["PR", "VIAJE", "TIPO_PAGO", "UNIDAD", "OWNER_CONT", "TIPO_MOV"]:
+for c in ["PR", "VIAJE", "TIPO_PAGO", "UNIDAD", "OWNER_CONT"]:
     if c in cont.columns:
         cont[c] = cont[c].apply(norm_text)
 
-# Owner estándar según catálogo
-if catalogo_file is not None:
-    liq["OWNER_STD_LIQ"] = liq["OWNER_LIQ"].map(star_to_nombre).fillna("")
-    cont["OWNER_STD_CONT"] = cont["OWNER_CONT"].map(sac_to_nombre).fillna("")
-else:
-    liq["OWNER_STD_LIQ"] = ""
-    cont["OWNER_STD_CONT"] = ""
-    
 liq["IMPORTE"] = liq["IMPORTE"].apply(lambda x: norm_amount(x, ndigits))
 cont["IMPORTE"] = cont["IMPORTE"].apply(lambda x: norm_amount(x, ndigits))
 
-# Regla de negocio (editable desde sidebar)
-liq_f = liq[liq["TIPO_CONCEPTO"] == liq_tipo].copy()
-cont_f = cont[cont["TIPO_MOV"] == cont_tipo].copy()
+# Apply exclusions by TIPO_PAGO (esto resuelve tu caso "cargos adicionales" y "ct pago x millas" si así lo defines)
+liq_f = apply_exclusions(liq, "TIPO_PAGO", exclusion_patterns)
+cont_f = apply_exclusions(cont, "TIPO_PAGO", exclusion_patterns)
 
-# Filtrar solo registros que estén en el catálogo (owners)
-if solo_owner and catalogo_file is not None:
-    liq_f = liq_f[liq_f["OWNER_STD_LIQ"] != ""].copy()
-    cont_f = cont_f[cont_f["OWNER_STD_CONT"] != ""].copy()
-    
 st.subheader("Resumen de carga")
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("Liquidaciones (original)", len(liq))
@@ -192,30 +136,16 @@ c4.metric("Contabilidad (filtrado)", len(cont_f))
 # Matching key (SIN owner) + consecutivo por duplicado
 key_cols = ["PR", "VIAJE", "UNIDAD", "TIPO_PAGO", "IMPORTE"]
 
-liq_k = build_seq(liq_f.copy(), key_cols, "_seq")
-cont_k = build_seq(cont_f.copy(), key_cols, "_seq")
+liq_k = build_seq(liq_f, key_cols, "_seq")
+cont_k = build_seq(cont_f, key_cols, "_seq")
 
-# Construcción de llave estable
-liq_k["_KEY"] = (
-    liq_k["PR"].fillna("").astype(str) + "||" +
-    liq_k["VIAJE"].fillna("").astype(str) + "||" +
-    liq_k["UNIDAD"].fillna("").astype(str) + "||" +
-    liq_k["TIPO_PAGO"].fillna("").astype(str) + "||" +
-    liq_k["IMPORTE"].fillna("").astype(str)
-)
+liq_k["_KEY"] = liq_k[key_cols].astype(str).agg("||".join, axis=1)
+cont_k["_KEY"] = cont_k[key_cols].astype(str).agg("||".join, axis=1)
 
-cont_k["_KEY"] = (
-    cont_k["PR"].fillna("").astype(str) + "||" +
-    cont_k["VIAJE"].fillna("").astype(str) + "||" +
-    cont_k["UNIDAD"].fillna("").astype(str) + "||" +
-    cont_k["TIPO_PAGO"].fillna("").astype(str) + "||" +
-    cont_k["IMPORTE"].fillna("").astype(str)
-)
+liq_k["_KEYSEQ"] = liq_k["_KEY"] + f"||SEQ=" + liq_k["_seq"].astype(str)
+cont_k["_KEYSEQ"] = cont_k["_KEY"] + f"||SEQ=" + cont_k["_seq"].astype(str)
 
-liq_k["_KEYSEQ"] = liq_k["_KEY"] + "||SEQ=" + liq_k["_seq"].astype(str)
-cont_k["_KEYSEQ"] = cont_k["_KEY"] + "||SEQ=" + cont_k["_seq"].astype(str)
-
-# Exact merge by KEY+SEQ
+# 1) Exact merge by KEY+SEQ
 m = liq_k.merge(
     cont_k,
     how="outer",
@@ -224,22 +154,28 @@ m = liq_k.merge(
     indicator=True
 )
 
+# Split outputs
 matched = m[m["_merge"] == "both"].copy()
 only_liq = m[m["_merge"] == "left_only"].copy()
 only_cont = m[m["_merge"] == "right_only"].copy()
 
+# Owner discrepancy flag on matched
 matched["OWNER_MATCH"] = matched["OWNER_LIQ"].fillna("") == matched["OWNER_CONT"].fillna("")
 matched["DIF_OWNER"] = ~matched["OWNER_MATCH"]
 
 matches_ok = matched[matched["DIF_OWNER"] == False].copy()
 matches_owner_diff = matched[matched["DIF_OWNER"] == True].copy()
 
+# Make them pretty (select columns)
 def pick_cols(df: pd.DataFrame, side: str) -> list[str]:
+    # side: "LIQ" or "CONT"
     cols = []
     for c in ["PR", "VIAJE", "UNIDAD", "TIPO_PAGO", "IMPORTE"]:
         cand = f"{c}_{side}"
         if cand in df.columns:
             cols.append(cand)
+        elif c in df.columns:
+            cols.append(c)
     owner = f"OWNER_{side}"
     if owner in df.columns:
         cols.append(owner)
@@ -247,24 +183,28 @@ def pick_cols(df: pd.DataFrame, side: str) -> list[str]:
 
 ok_view = matches_ok[pick_cols(matches_ok, "LIQ") + pick_cols(matches_ok, "CONT")].copy()
 diff_view = matches_owner_diff[pick_cols(matches_owner_diff, "LIQ") + pick_cols(matches_owner_diff, "CONT")].copy()
+
 liq_missing_view = only_liq[pick_cols(only_liq, "LIQ")].copy()
 cont_missing_view = only_cont[pick_cols(only_cont, "CONT")].copy()
-    
+
 # ----------------------------------------
 # Auditoría de exclusiones (desplegable)
 # ----------------------------------------
-liq_excl = liq[liq["TIPO_CONCEPTO"] != liq_tipo].copy()
-cont_excl = cont[cont["TIPO_MOV"] != cont_tipo].copy()
+liq_excl = liq.loc[~liq.index.isin(liq_f.index)].copy()
+cont_excl = cont.loc[~cont.index.isin(cont_f.index)].copy()
 
 # Orden opcional para que sea más fácil revisar
 for df in (liq_excl, cont_excl):
     if "PR" in df.columns and "VIAJE" in df.columns:
         df.sort_values(by=["PR", "VIAJE", "UNIDAD", "TIPO_PAGO"], inplace=True, kind="stable")
 
-with st.expander("🔎 Ver filtros aplicados (criterios)", expanded=False):
-    st.markdown("### Criterios activos")
-    st.write(f"- Liquidaciones: **TIPO_CONCEPTO = '{liq_tipo}'**")
-    st.write(f"- Contabilidad: **TIPO_MOV = '{cont_tipo}'**")
+with st.expander("🔎 Ver filtros aplicados (exclusiones)", expanded=False):
+    st.markdown("### Patrones activos (regex)")
+    if exclusion_patterns:
+        st.code("\n".join(exclusion_patterns))
+    else:
+        st.info("No hay exclusiones activas.")
+
     c1, c2 = st.columns(2)
     c1.metric("Filtrados en Liquidaciones", len(liq_excl))
     c2.metric("Filtrados en Contabilidad", len(cont_excl))
@@ -393,12 +333,7 @@ sheets = {
     "Missing_in_Liquidaciones": cont_missing_view,
     "Filtrados_Liquidaciones": liq_excl,
     "Filtrados_Contabilidad": cont_excl,
-    "Criterios_Filtro": pd.DataFrame({
-        "criterio": [
-            f"Liquidaciones: TIPO_CONCEPTO = '{liq_tipo}'",
-            f"Contabilidad: TIPO_MOV = '{cont_tipo}'",
-        ]
-    }),
+    "Patrones_Exclusion": pd.DataFrame({"regex": exclusion_patterns}),
 }
 if enable_suggestions:
     sheets["Suggestions_Relaxed"] = suggestions_df
