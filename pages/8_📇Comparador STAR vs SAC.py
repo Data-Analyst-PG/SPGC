@@ -120,9 +120,9 @@ if not liq_file or not cont_file:
     st.stop()
 
 current_signature = (
-    liq_file.name if liq_file else "",
-    cont_file.name if cont_file else "",
-    catalogo_file.name if catalogo_file else "",
+    (liq_file.name, len(liq_file.getvalue())) if liq_file else ("", 0),
+    (cont_file.name, len(cont_file.getvalue())) if cont_file else ("", 0),
+    (catalogo_file.name, len(catalogo_file.getvalue())) if catalogo_file else ("", 0),
     solo_owner,
     ndigits,
     liq_tipo,
@@ -380,10 +380,7 @@ with tabs_dup[0]:
     else:
         cols_liq_dup = [c for c in ["PR", "VIAJE", "UNIDAD", "TIPO_PAGO", "IMPORTE", "OWNER_LIQ"] if c in dup_liq.columns]
         show_df(
-            dup_liq_resumen.sort_values(
-                ["REPETICIONES"] + dup_key_cols,
-                ascending=[False, True, True, True, True, True]
-            ),
+            dup_liq[cols_liq_dup].sort_values(dup_key_cols),
             height=420
         )
 
@@ -391,7 +388,13 @@ with tabs_dup[1]:
     if dup_liq_resumen.empty:
         st.success("No hay combinaciones duplicadas en Liquidaciones.")
     else:
-        show_df(dup_liq_resumen.sort_values(...), height=420)
+        show_df(
+            dup_liq_resumen.sort_values(
+                ["REPETICIONES"] + dup_key_cols,
+                ascending=[False, True, True, True, True, True]
+            ),
+            height=420
+        )
 
 with tabs_dup[2]:
     if dup_cont.empty:
