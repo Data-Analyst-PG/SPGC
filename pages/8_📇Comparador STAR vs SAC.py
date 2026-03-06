@@ -334,10 +334,19 @@ def pick_cols(df: pd.DataFrame, side: str) -> list[str]:
 
     return cols
 
-ok_view = matches_ok[pick_cols(matches_ok, "LIQ") + pick_cols(matches_ok, "CONT")].copy()
-diff_view = matches_owner_diff[pick_cols(matches_owner_diff, "LIQ") + pick_cols(matches_owner_diff, "CONT")].copy()
-liq_missing_view = only_liq[pick_cols(only_liq, "LIQ")].copy()
-cont_missing_view = only_cont[pick_cols(only_cont, "CONT")].copy()
+base_cols = [c for c in ["PR", "VIAJE", "UNIDAD", "TIPO_PAGO", "IMPORTE"] if c in matches_ok.columns]
+
+liq_extra_cols = [c for c in ["OWNER_LIQ", "OWNER_STD_LIQ", "TIPO_CONCEPTO_LIQ"] if c in matches_ok.columns]
+cont_extra_cols = [c for c in ["OWNER_CONT", "OWNER_STD_CONT", "TIPO_MOV_CONT"] if c in matches_ok.columns]
+
+ok_view = matches_ok[base_cols + liq_extra_cols + cont_extra_cols].copy()
+diff_view = matches_owner_diff[base_cols + liq_extra_cols + cont_extra_cols].copy()
+
+liq_missing_cols = [c for c in ["PR", "VIAJE", "UNIDAD", "TIPO_PAGO", "IMPORTE", "OWNER_LIQ", "OWNER_STD_LIQ", "TIPO_CONCEPTO_LIQ"] if c in only_liq.columns]
+cont_missing_cols = [c for c in ["PR", "VIAJE", "UNIDAD", "TIPO_PAGO", "IMPORTE", "OWNER_CONT", "OWNER_STD_CONT", "TIPO_MOV_CONT"] if c in only_cont.columns]
+
+liq_missing_view = only_liq[liq_missing_cols].copy()
+cont_missing_view = only_cont[cont_missing_cols].copy()
 
 # ----------------------------------------
 # Duplicados detectados
