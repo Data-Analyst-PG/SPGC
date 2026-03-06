@@ -227,6 +227,14 @@ cont_k = build_seq(cont_f, key_cols, "_seq")
 faltan_liq = [c for c in key_cols if c not in liq_k.columns]
 faltan_cont = [c for c in key_cols if c not in cont_k.columns]
 
+for c in ["PR", "VIAJE", "UNIDAD", "TIPO_PAGO", "IMPORTE"]:
+    if c not in liq_k.columns:
+        st.error(f"Liquidaciones no tiene la columna clave: {c}")
+        st.stop()
+    if c not in cont_k.columns:
+        st.error(f"Contabilidad no tiene la columna clave: {c}")
+        st.stop()
+        
 if faltan_liq:
     st.error(f"En Liquidaciones faltan columnas clave para comparar: {faltan_liq}")
     st.stop()
@@ -247,12 +255,25 @@ if dup_cols_liq or dup_cols_cont:
     )
     st.stop()
 
-# Construcción segura de llave
-liq_k["_KEY"] = liq_k[key_cols].astype(str).apply("||".join, axis=1)
-cont_k["_KEY"] = cont_k[key_cols].astype(str).apply("||".join, axis=1)
+# Construcción segura de llave (sin apply sobre DataFrame)
+liq_k["_KEY"] = (
+    liq_k["PR"].astype(str).fillna("") + "||" +
+    liq_k["VIAJE"].astype(str).fillna("") + "||" +
+    liq_k["UNIDAD"].astype(str).fillna("") + "||" +
+    liq_k["TIPO_PAGO"].astype(str).fillna("") + "||" +
+    liq_k["IMPORTE"].astype(str).fillna("")
+)
 
-liq_k["_KEYSEQ"] = liq_k["_KEY"] + f"||SEQ=" + liq_k["_seq"].astype(str)
-cont_k["_KEYSEQ"] = cont_k["_KEY"] + f"||SEQ=" + cont_k["_seq"].astype(str)
+cont_k["_KEY"] = (
+    cont_k["PR"].astype(str).fillna("") + "||" +
+    cont_k["VIAJE"].astype(str).fillna("") + "||" +
+    cont_k["UNIDAD"].astype(str).fillna("") + "||" +
+    cont_k["TIPO_PAGO"].astype(str).fillna("") + "||" +
+    cont_k["IMPORTE"].astype(str).fillna("")
+)
+
+liq_k["_KEYSEQ"] = liq_k["_KEY"] + "||SEQ=" + liq_k["_seq"].astype(str)
+cont_k["_KEYSEQ"] = cont_k["_KEY"] + "||SEQ=" + cont_k["_seq"].astype(str)
 
 # 1) Exact merge by KEY+SEQ
 m = liq_k.merge(
