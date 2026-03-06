@@ -353,14 +353,14 @@ dup_cont = cont_f[cont_f.duplicated(subset=dup_key_cols, keep=False)].copy()
 
 # Resumen por llave
 dup_liq_resumen = (
-    liq_f.groupby(dup_key_cols, dropna=False)
+    liq_f.groupby(dup_key_cols, dropna=False, observed=True)
     .size()
     .reset_index(name="REPETICIONES")
 )
 dup_liq_resumen = dup_liq_resumen[dup_liq_resumen["REPETICIONES"] > 1].copy()
 
 dup_cont_resumen = (
-    cont_f.groupby(dup_key_cols, dropna=False)
+    cont_f.groupby(dup_key_cols, dropna=False, observed=True)
     .size()
     .reset_index(name="REPETICIONES")
 )
@@ -620,11 +620,15 @@ if enable_suggestions and (len(liq_missing_view) > 0 or len(cont_missing_view) >
     # relaxed key
     relaxed_cols = ["PR", "UNIDAD", "TIPO_PAGO", "IMPORTE"]
 
+    liq_u = only_liq.copy()
+    cont_u = only_cont.copy()
+
+    liq_cols_keep = [c for c in ["PR", "VIAJE", "UNIDAD", "TIPO_PAGO", "IMPORTE", "_seq", "OWNER_LIQ"] if c in liq_u.columns]
+    cont_cols_keep = [c for c in ["PR", "VIAJE", "UNIDAD", "TIPO_PAGO", "IMPORTE", "_seq", "OWNER_CONT"] if c in cont_u.columns]
+
     liq_u = liq_u[liq_cols_keep].copy()
     cont_u = cont_u[cont_cols_keep].copy()
-
-    liq_u = liq_u[[c for c in ["PR", "VIAJE", "UNIDAD", "TIPO_PAGO", "IMPORTE", "OWNER_LIQ", "_seq"] if c in liq_u.columns]].copy()
-    cont_u = cont_u[[c for c in ["PR", "VIAJE", "UNIDAD", "TIPO_PAGO", "IMPORTE", "OWNER_CONT", "_seq"] if c in cont_u.columns]].copy()
+    
     liq_u["_REL"] = (
         liq_u["PR"].fillna("").astype(str) + "||" +
         liq_u["UNIDAD"].fillna("").astype(str) + "||" +
