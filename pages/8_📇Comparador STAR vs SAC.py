@@ -119,11 +119,27 @@ if not liq_file or not cont_file:
     st.info("Carga ambos archivos para iniciar.")
     st.stop()
 
-if "processed" not in st.session_state:
+current_signature = (
+    liq_file.name if liq_file else "",
+    cont_file.name if cont_file else "",
+    catalogo_file.name if catalogo_file else "",
+    solo_owner,
+    ndigits,
+    liq_tipo,
+    cont_tipo,
+    enable_suggestions,
+    suggestions_limit,
+)
+
+if "last_signature" not in st.session_state:
+    st.session_state.last_signature = None
+
+if current_signature != st.session_state.last_signature:
     st.session_state.processed = False
 
 if run_process:
     st.session_state.processed = True
+    st.session_state.last_signature = current_signature
 
 if not st.session_state.processed:
     st.info("Configura los filtros y da clic en 'Procesar confronta'.")
@@ -291,13 +307,24 @@ matches_owner_diff = matched[matched["DIF_OWNER"] == True].copy()
 
 def pick_cols(df: pd.DataFrame, side: str) -> list[str]:
     cols = []
+    # Estas columnas quedaron sin sufijo por ser llaves del merge
     for c in ["PR", "VIAJE", "UNIDAD", "TIPO_PAGO", "IMPORTE"]:
-        cand = f"{c}_{side}"
-        if cand in df.columns:
-            cols.append(cand)
+        if c in df.columns:
+            cols.append(c)
+
+    # Estas sí conservan sufijo
     owner = f"OWNER_{side}"
     if owner in df.columns:
         cols.append(owner)
+
+    owner_std = f"OWNER_STD_{side}"
+    if owner_std in df.columns:
+        cols.append(owner_std)
+
+    tipo = "TIPO_CONCEPTO_LIQ" if side == "LIQ" else "TIPO_MOV_CONT"
+    if tipo in df.columns:
+        cols.append(tipo)
+
     return cols
 
 ok_view = matches_ok[pick_cols(matches_ok, "LIQ") + pick_cols(matches_ok, "CONT")].copy()
@@ -354,11 +381,7 @@ with tabs_dup[1]:
     if dup_liq_resumen.empty:
         st.success("No hay combinaciones duplicadas en Liquidaciones.")
     else:
-        st.dataframe(
-            dup_liq_resumen.sort_values(["REPETICIONES"] + dup_key_cols, ascending=[False, True, True, True, True, True]),
-            use_container_width=True,
-            height=420
-        )
+        show_df(dup_liq_resumen.sort_values(...), height=420)
 
 with tabs_dup[2]:
     if dup_cont.empty:
@@ -583,11 +606,14 @@ if enable_suggestions and (len(liq_missing_view) > 0 or len(cont_missing_view) >
     # relaxed key
     relaxed_cols = ["PR", "UNIDAD", "TIPO_PAGO", "IMPORTE"]
 
-    liq_u = only_liq[[c for c in only_liq.columns if c.endswith("_LIQ")]].copy()
-    cont_u = only_cont[[c for c in only_cont.columns if c.endswith("_CONT")]].copy()
+    liq_u = only_liq.copy()
+    cont_u = only_cont.copy()
 
-    liq_u.columns = [c.replace("_LIQ", "") for c in liq_u.columns]
-    cont_u.columns = [c.replace("_CONT", "") for c in cont_u.columns]
+    liq_cols_keep = [c for c in ["PR", "VIAJE", "UNIDAD", "TIPO_PAGO", "IMPORTE", "_seq", "OWNER_LIQ"] if c in liq_u.columns]
+    cont_cols_keep = [c for c in ["PR", "VIAJE", "UNIDAD", "TIPO_PAGO", "IMPORTE", "_seq", "OWNER_CONT"] if c in cont_u.columns]
+
+    liq_u = liq_u[liq_cols_keep].copy()
+    cont_u = cont_u[cont_cols_keep].copy()
 
     liq_u = liq_u[[c for c in ["PR", "VIAJE", "UNIDAD", "TIPO_PAGO", "IMPORTE", "OWNER_LIQ", "_seq"] if c in liq_u.columns]].copy()
     cont_u = cont_u[[c for c in ["PR", "VIAJE", "UNIDAD", "TIPO_PAGO", "IMPORTE", "OWNER_CONT", "_seq"] if c in cont_u.columns]].copy()
@@ -663,15 +689,17 @@ sheets = {
 if enable_suggestions:
     sheets["Suggestions_Relaxed"] = suggestions_df
 
-prepare_excel = st.button("Preparar archivo Excel")
+if "xlsx_bytes" not in st.session_state:
+    st.session_state.xlsx_bytes = None
 
-if prepare_excel:
+if st.button("Preparar archivo Excel"):
     with st.spinner("Generando Excel..."):
-        xlsx_bytes = build_excel_cached(sheets)
+        st.session_state.xlsx_bytes = build_excel_cached(sheets)
 
+if st.session_state.xlsx_bytes is not None:
     st.download_button(
         "⬇️ Descargar reporte de confronta (Excel)",
-        data=xlsx_bytes,
+        data=st.session_state.xlsx_bytes,
         file_name="reporte_confronta_star.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
