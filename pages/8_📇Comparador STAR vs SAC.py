@@ -192,6 +192,34 @@ c4.metric("Contabilidad (filtrado)", len(cont_f))
 # Matching key (SIN owner) + consecutivo por duplicado
 key_cols = ["PR", "VIAJE", "UNIDAD", "TIPO_PAGO", "IMPORTE"]
 
+st.divider()
+st.subheader("🔁 Registros duplicados detectados")
+
+dup_liq = liq_f[liq_f.duplicated(subset=key_cols, keep=False)].copy()
+dup_cont = cont_f[cont_f.duplicated(subset=key_cols, keep=False)].copy()
+
+c1, c2 = st.columns(2)
+
+with c1:
+    st.metric("Duplicados en Liquidaciones", len(dup_liq))
+
+with c2:
+    st.metric("Duplicados en Contabilidad", len(dup_cont))
+
+tab1, tab2 = st.tabs(["Duplicados Liquidaciones", "Duplicados Contabilidad"])
+
+with tab1:
+    if len(dup_liq) == 0:
+        st.success("No hay duplicados en Liquidaciones")
+    else:
+        st.dataframe(dup_liq, use_container_width=True)
+
+with tab2:
+    if len(dup_cont) == 0:
+        st.success("No hay duplicados en Contabilidad")
+    else:
+        st.dataframe(dup_cont, use_container_width=True)
+
 liq_k = build_seq(liq_f, key_cols, "_seq")
 cont_k = build_seq(cont_f, key_cols, "_seq")
 
