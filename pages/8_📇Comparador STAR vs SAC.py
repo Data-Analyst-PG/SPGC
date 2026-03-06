@@ -117,22 +117,43 @@ sac_to_nombre = {}
 if catalogo_file is not None:
     catalogo = pd.read_excel(catalogo_file)
 
-    for col in ["NOMBRE", "Usuario STAR", "Usuario SAC", "Tipo"]:
-        if col in catalogo.columns:
-            catalogo[col] = catalogo[col].apply(norm_text)
+    # Normaliza nombres de columnas del catálogo
+    catalogo.columns = (
+        catalogo.columns.astype(str)
+        .str.strip()
+        .str.upper()
+    )
+
+    # Renombra a nombres estándar usando los nombres reales de tu catálogo
+    catalogo = catalogo.rename(columns={
+        "NOMBRE": "NOMBRE",
+        "USUARIO STAR (SUGERIDO)": "USUARIO_STAR",
+        "USUARIO SAC (SUGERIDO)": "USUARIO_SAC",
+        "TIPO": "TIPO",
+    })
+
+    # Validación
+    expected_cols = ["NOMBRE", "USUARIO_STAR", "USUARIO_SAC", "TIPO"]
+    faltantes = [c for c in expected_cols if c not in catalogo.columns]
+    if faltantes:
+        st.error(f"Al catálogo le faltan columnas: {faltantes}")
+        st.write("Columnas encontradas en catálogo:", catalogo.columns.tolist())
+        st.stop()
+
+    # Normaliza contenido
+    for col in ["NOMBRE", "USUARIO_STAR", "USUARIO_SAC", "TIPO"]:
+        catalogo[col] = catalogo[col].apply(norm_text)
 
     if solo_owner:
-        catalogo = catalogo[catalogo["Tipo"] == "OWNER"]
+        catalogo = catalogo[catalogo["TIPO"] == "OWNER"].copy()
 
-    if "Usuario STAR" in catalogo.columns:
-        star_to_nombre = dict(
-            catalogo.loc[catalogo["Usuario STAR"] != "", ["Usuario STAR", "NOMBRE"]].values
-        )
+    star_to_nombre = dict(
+        catalogo.loc[catalogo["USUARIO_STAR"] != "", ["USUARIO_STAR", "NOMBRE"]].values
+    )
 
-    if "Usuario SAC" in catalogo.columns:
-        sac_to_nombre = dict(
-            catalogo.loc[catalogo["Usuario SAC"] != "", ["Usuario SAC", "NOMBRE"]].values
-        )
+    sac_to_nombre = dict(
+        catalogo.loc[catalogo["USUARIO_SAC"] != "", ["USUARIO_SAC", "NOMBRE"]].values
+    )
         
 # Normalize
 liq = liq.rename(columns={
@@ -163,9 +184,14 @@ for c in ["PR", "VIAJE", "TIPO_PAGO", "UNIDAD", "OWNER_CONT", "TIPO_MOV"]:
         cont[c] = cont[c].apply(norm_text)
 
 # Owner estándar según catálogo
+# Owner estándar según catálogo
 if catalogo_file is not None:
     liq["OWNER_STD_LIQ"] = liq["OWNER_LIQ"].map(star_to_nombre).fillna("")
     cont["OWNER_STD_CONT"] = cont["OWNER_CONT"].map(sac_to_nombre).fillna("")
+
+    st.sidebar.caption(f"Filas catálogo después de filtro OWNER: {len(catalogo)}")
+    st.sidebar.caption(f"Matches STAR en catálogo: {(liq['OWNER_STD_LIQ'] != '').sum()}")
+    st.sidebar.caption(f"Matches SAC en catálogo: {(cont['OWNER_STD_CONT'] != '').sum()}")
 else:
     liq["OWNER_STD_LIQ"] = ""
     cont["OWNER_STD_CONT"] = ""
@@ -359,8 +385,19 @@ if enable_suggestions and (len(liq_missing_view) > 0 or len(cont_missing_view) >
     liq_u = liq_k[liq_k["_KEYSEQ"].isin(only_liq["_KEYSEQ"])].copy()
     cont_u = cont_k[cont_k["_KEYSEQ"].isin(only_cont["_KEYSEQ"])].copy()
 
-    liq_u["_REL"] = liq_u[relaxed_cols].astype(str).agg("||".join, axis=1)
-    cont_u["_REL"] = cont_u[relaxed_cols].astype(str).agg("||".join, axis=1)
+    liq_u["_REL"] = (
+        liq_u["PR"].fillna("").astype(str) + "||" +
+        liq_u["UNIDAD"].fillna("").astype(str) + "||" +
+        liq_u["TIPO_PAGO"].fillna("").astype(str) + "||" +
+        liq_u["IMPORTE"].fillna("").astype(str)
+    )
+
+    cont_u["_REL"] = (
+        cont_u["PR"].fillna("").astype(str) + "||" +
+        cont_u["UNIDAD"].fillna("").astype(str) + "||" +
+        cont_u["TIPO_PAGO"].fillna("").astype(str) + "||" +
+        cont_u["IMPORTE"].fillna("").astype(str)
+    )
 
     # Build candidates: join by relaxed key
     cand = liq_u.merge(cont_u, how="inner", on="_REL", suffixes=("_LIQ", "_CONT"))
