@@ -177,7 +177,7 @@ if not st.session_state.processed:
     st.stop()
     
 # Column mapping (según tus archivos)
-liq_usecols = ["Liquidacion", "Numero_Viaje", "TipoPago", "Monto", "Unidad", "Operador", "Tipo_Concepto"]
+liq_usecols = ["Liquidacion", "Numero_Viaje", "TipoPago", "Monto", "Unidad", "Owner", "Tipo_Concepto"]
 cont_usecols = ["Factura", "Referencia", "TipoPago", "Importe", "Unidad", "NombreCuentaContable", "TipoMovimiento"]
 
 try:
@@ -255,7 +255,7 @@ liq = liq.rename(columns={
     "TipoPago": "TIPO_PAGO",
     "Monto": "IMPORTE",
     "Unidad": "UNIDAD",
-    "Operador": "OWNER_LIQ",
+    "Owner": "OWNER_LIQ",
     "Tipo_Concepto": "TIPO_CONCEPTO",
 })
 cont = cont.rename(columns={
