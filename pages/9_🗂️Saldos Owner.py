@@ -482,3 +482,95 @@ with t4:
     control_pr["DIF_REG"] = control_pr["REG_LIQ"] - control_pr["REG_CONT"]
     control_pr["DIF_IMPORTE"] = control_pr["IMPORTE_LIQ"] - control_pr["IMPORTE_CONT"]
     show_df(control_pr.sort_values(["PR"]), height=700)
+
+# ============================================================
+# SALDOS POR CUENTA CONTABLE (independiente de filtros)
+# ============================================================
+st.divider()
+st.subheader("Saldos por cuenta contable")
+
+cont_saldos_base = cont.copy()
+cont_saldos_base["OWNER_CONT"] = cont_saldos_base["OWNER_CONT"].fillna("").astype(str)
+cont_saldos_base["TIPO_MOV"] = cont_saldos_base["TIPO_MOV"].fillna("").astype(str)
+cont_saldos_base["IMPORTE"] = pd.to_numeric(cont_saldos_base["IMPORTE"], errors="coerce").fillna(0)
+
+resumen_saldos = (
+    cont_saldos_base
+    .groupby(["OWNER_CONT", "TIPO_MOV"], dropna=False)["IMPORTE"]
+    .sum()
+    .unstack(fill_value=0)
+    .reset_index()
+)
+
+if "H" not in resumen_saldos.columns:
+    resumen_saldos["H"] = 0.0
+if "D" not in resumen_saldos.columns:
+    resumen_saldos["D"] = 0.0
+
+resumen_saldos["SALDO"] = resumen_saldos["H"] - resumen_saldos["D"]
+resumen_saldos["TOTAL_MOVIMIENTOS"] = (
+    cont_saldos_base.groupby("OWNER_CONT", dropna=False).size().values
+)
+
+resumen_saldos = resumen_saldos.rename(columns={
+    "OWNER_CONT": "CUENTA",
+    "H": "TOTAL_H",
+    "D": "TOTAL_D",
+})
+
+col_a, col_b = st.columns([1, 2])
+
+with col_a:
+    cuenta_sel = st.selectbox(
+        "Selecciona una cuenta",
+        options=[""] + sorted([c for c in resumen_saldos["CUENTA"].astype(str).unique().tolist() if c != ""]),
+        index=0,
+    )
+
+with col_b:
+    buscar_cuenta = st.text_input("Buscar cuenta en el resumen", value="")
+
+resumen_saldos_view = resumen_saldos.copy()
+if buscar_cuenta.strip():
+    patron = buscar_cuenta.strip().upper()
+    resumen_saldos_view = resumen_saldos_view[
+        resumen_saldos_view["CUENTA"].astype(str).str.upper().str.contains(patron, na=False)
+    ].copy()
+
+st.markdown("**Resumen de saldos por cuenta**")
+show_df(
+    resumen_saldos_view.sort_values(["CUENTA"]).reset_index(drop=True),
+    height=400
+)
+
+if cuenta_sel:
+    cuenta_df = cont_saldos_base[cont_saldos_base["OWNER_CONT"] == cuenta_sel].copy()
+
+    total_h = cuenta_df.loc[cuenta_df["TIPO_MOV"] == "H", "IMPORTE"].sum()
+    total_d = cuenta_df.loc[cuenta_df["TIPO_MOV"] == "D", "IMPORTE"].sum()
+    saldo = total_h - total_d
+
+    st.markdown(f"### Detalle de la cuenta: {cuenta_sel}")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Total H", f"{total_h:,.2f}")
+    c2.metric("Total D", f"{total_d:,.2f}")
+    c3.metric("Saldo (H - D)", f"{saldo:,.2f}")
+    c4.metric("Movimientos", len(cuenta_df))
+
+    mov_h = cuenta_df[cuenta_df["TIPO_MOV"] == "H"].copy()
+    mov_d = cuenta_df[cuenta_df["TIPO_MOV"] == "D"].copy()
+
+    t_h, t_d, t_all = st.tabs([
+        f"Movimientos H ({len(mov_h)})",
+        f"Movimientos D ({len(mov_d)})",
+        f"Todos ({len(cuenta_df)})",
+    ])
+
+    with t_h:
+        show_df(mov_h, height=500)
+
+    with t_d:
+        show_df(mov_d, height=500)
+
+    with t_all:
+        show_df(cuenta_df, height=500)
