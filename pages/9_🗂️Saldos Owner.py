@@ -78,14 +78,7 @@ def to_excel_bytes(sheets: dict[str, pd.DataFrame]) -> bytes:
     return bio.getvalue()
 
 
-def show_df(df: pd.DataFrame, height: int = 420, max_rows: int = 2000):
-    if df.empty:
-        st.dataframe(df, use_container_width=True, height=height)
-        return
-    if len(df) > max_rows:
-        st.caption(f"Mostrando {max_rows:,} de {len(df):,} filas. El archivo descargable incluye todo.")
-        st.dataframe(df.head(max_rows), use_container_width=True, height=height)
-        return
+def show_df(df: pd.DataFrame, height: int = 600):
     st.dataframe(df, use_container_width=True, height=height)
 
 
@@ -435,11 +428,11 @@ c8.metric("Control Cont", f"{len(cont_clasificado):,}")
 col1, col2 = st.columns(2)
 with col1:
     st.markdown("**Resumen Liquidaciones**")
-    show_df(liq_resumen, height=240, max_rows=100)
+    show_df(liq_resumen, height=240)
     st.caption(f"Validación: {len(liq_clasificado):,} filas clasificadas vs {len(liq_f):,} filas filtradas.")
 with col2:
     st.markdown("**Resumen Contabilidad**")
-    show_df(cont_resumen, height=240, max_rows=100)
+    show_df(cont_resumen, height=240)
     st.caption(f"Validación: {len(cont_clasificado):,} filas clasificadas vs {len(cont_f):,} filas filtradas.")
 
 # ============================================================
@@ -462,7 +455,7 @@ with t1:
         "ROW_ID_CONT", "OWNER_CONT", "OWNER_STD_CONT", "PR_EXISTE_EN_CONT", "MATCH_RELAXED",
         "REG_CONT", "IMPORTE_TOTAL_CONT",
     ]
-    show_df(liq_clasificado[[c for c in cols if c in liq_clasificado.columns]], height=500)
+    show_df(liq_clasificado[[c for c in cols if c in liq_clasificado.columns]], height=700)
 
 with t2:
     cols = [
@@ -471,7 +464,7 @@ with t2:
         "ROW_ID_LIQ", "OWNER_LIQ", "OWNER_STD_LIQ", "PR_EXISTE_EN_LIQ", "MATCH_RELAXED",
         "REG_LIQ", "IMPORTE_TOTAL_LIQ",
     ]
-    show_df(cont_clasificado[[c for c in cols if c in cont_clasificado.columns]], height=500)
+    show_df(cont_clasificado[[c for c in cols if c in cont_clasificado.columns]], height=700)
 
 with t3:
     diff_liq = liq_clasificado[liq_clasificado["ESTATUS_MATCH"] == "MATCH_CON_DISCREPANCIA"].copy()
@@ -480,7 +473,7 @@ with t3:
         "OWNER_LIQ", "OWNER_STD_LIQ", "OWNER_CONT", "OWNER_STD_CONT",
         "ESTATUS_MATCH", "OBSERVACION",
     ]
-    show_df(diff_liq[[c for c in cols if c in diff_liq.columns]], height=500)
+    show_df(diff_liq[[c for c in cols if c in diff_liq.columns]], height=700)
 
 with t4:
     liq_pr = liq_f.groupby("PR", dropna=False).agg(REG_LIQ=("PR", "size"), IMPORTE_LIQ=("IMPORTE", "sum")).reset_index()
@@ -488,31 +481,4 @@ with t4:
     control_pr = liq_pr.merge(cont_pr, on="PR", how="outer").fillna(0)
     control_pr["DIF_REG"] = control_pr["REG_LIQ"] - control_pr["REG_CONT"]
     control_pr["DIF_IMPORTE"] = control_pr["IMPORTE_LIQ"] - control_pr["IMPORTE_CONT"]
-    show_df(control_pr.sort_values(["PR"]), height=500)
-
-# ============================================================
-# Exportación
-# ============================================================
-st.divider()
-st.subheader("Descarga")
-
-sheets = {
-    "Liq_Clasificadas": liq_clasificado,
-    "Cont_Clasificadas": cont_clasificado,
-    "Liq_Resumen": liq_resumen,
-    "Cont_Resumen": cont_resumen,
-    "Match_OK_Liq": liq_clasificado[liq_clasificado["ESTATUS_MATCH"] == "MATCH_OK"],
-    "Match_Diff_Liq": liq_clasificado[liq_clasificado["ESTATUS_MATCH"] == "MATCH_CON_DISCREPANCIA"],
-    "No_Existe_En_Cont": liq_clasificado[liq_clasificado["ESTATUS_MATCH"] == "NO_EXISTE_EN_CONTABILIDAD"],
-    "Match_OK_Cont": cont_clasificado[cont_clasificado["ESTATUS_MATCH"] == "MATCH_OK"],
-    "Match_Diff_Cont": cont_clasificado[cont_clasificado["ESTATUS_MATCH"] == "MATCH_CON_DISCREPANCIA"],
-    "No_Existe_En_Liq": cont_clasificado[cont_clasificado["ESTATUS_MATCH"] == "NO_EXISTE_EN_LIQUIDACIONES"],
-}
-
-excel_bytes = to_excel_bytes(sheets)
-st.download_button(
-    "⬇️ Descargar Excel clasificado",
-    data=excel_bytes,
-    file_name="comparador_star_sac_v2_clasificado.xlsx",
-    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-)
+    show_df(control_pr.sort_values(["PR"]), height=700)
