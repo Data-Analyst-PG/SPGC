@@ -197,6 +197,18 @@ liq = liq.rename(columns={
     "Tipo_Concepto": "TIPO_CONCEPTO",
 })
 
+# ------------------------------------------------------------
+# Excluir conceptos que no se reflejan en contabilidad
+# ------------------------------------------------------------
+if "Concepto" in liq.columns:
+    liq["Concepto"] = liq["Concepto"].apply(norm_text)
+
+    conceptos_excluir = [
+        "ADICIONAL CHARGES"
+    ]
+
+    liq = liq[~liq["Concepto"].isin(conceptos_excluir)].copy()
+    
 cont = cont.rename(columns={
     "Factura": "PR",
     "Referencia": "VIAJE",
