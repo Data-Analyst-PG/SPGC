@@ -123,13 +123,33 @@ def _extract_stage_columns(ws, header_row: int) -> dict[str, int]:
     return stage_map
 
 
-def _is_summary_row(ws, row_idx: int, id_col: int, vendedor_col: int) -> bool:
+def _extract_vendor_from_group_row(value: Any) -> str | None:
+    text = _normalize_text(value)
+    if not text:
+        return None
+    match = re.match(r"^(.*?)\s+En\s+Seguimiento\s*:\s*\d+", text, flags=re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+    return None
+
+
+def _is_summary_row(ws, row_idx: int, id_col: int) -> bool:
     id_val = ws.cell(row_idx, id_col).value
-    vendedor_val = ws.cell(row_idx, vendedor_col).value
-    if id_val in (None, "") or vendedor_val in (None, ""):
+    if id_val in (None, ""):
         return False
     next_cell = _normalize_text(ws.cell(row_idx + 1, id_col).value)
     return next_cell.lower().startswith("seguimiento")
+
+
+def _map_etapa_code(etapa_texto: Any) -> str | None:
+    text = _normalize_text(etapa_texto)
+    if not text:
+        return None
+    match = re.match(r"^(\d+\.\d+)", text)
+    if not match:
+        return None
+    etapa = match.group(1)
+    return etapa if etapa in ETAPA_COLUMNS else None
 
 
 def _safe_int(value: Any) -> int:
@@ -150,18 +170,18 @@ def parse_seguimiento_workbook(file_bytes: bytes) -> ParseResult:
     periodo = _extract_periodo(ws)
     header_row = _find_header_row(ws)
     colmap = _build_column_map(ws, header_row)
-    stage_map = _extract_stage_columns(ws, header_row)
 
-    required_headers = ["Id", "Cliente", "Tipo", "Vendedor"]
-    missing_headers = [h for h in required_headers if h not in colmap]
-    if missing_headers:
-        raise ValueError(f"Faltan columnas requeridas en la descarga: {', '.join(missing_headers)}")
+    if "Id" not in colmap:
+        raise ValueError("No encontré la columna base de Id en la descarga.")
 
     resumen_rows: list[dict[str, Any]] = []
     detalle_rows: list[dict[str, Any]] = []
 
     current_cliente: str | None = None
     current_id: Any = None
+    current_tipo: str | None = None
+    current_vendedor: str | None = None
+    resumen_index_by_id: dict[Any, int] = {}
 
     row_idx = header_row + 1
     while row_idx <= ws.max_row:
@@ -171,34 +191,43 @@ def parse_seguimiento_workbook(file_bytes: bytes) -> ParseResult:
             row_idx += 1
             continue
 
-        if _is_summary_row(ws, row_idx, colmap["Id"], colmap["Vendedor"]):
-            current_id = ws.cell(row_idx, colmap["Id"]).value
-            current_cliente = ws.cell(row_idx, colmap["Cliente"]).value
+        vendor_from_group = _extract_vendor_from_group_row(ws.cell(row_idx, 1).value)
+        if vendor_from_group:
+            current_vendedor = vendor_from_group
+            row_idx += 1
+            continue
+
+        if _is_summary_row(ws, row_idx, colmap["Id"]):
+            current_id = ws.cell(row_idx, 2).value
+            current_cliente = ws.cell(row_idx, 15).value
+            current_tipo = ws.cell(row_idx, 16).value
 
             resumen_item: dict[str, Any] = {
                 "Id": current_id,
                 "Cliente": current_cliente,
-                "Tipo": ws.cell(row_idx, colmap["Tipo"]).value,
-                "Vendedor": ws.cell(row_idx, colmap["Vendedor"]).value,
+                "Tipo": current_tipo,
+                "Vendedor": current_vendedor,
             }
             for etapa in ETAPA_COLUMNS:
-                resumen_item[etapa] = _safe_int(ws.cell(row_idx, stage_map[etapa]).value)
+                resumen_item[etapa] = 0
+
+            resumen_index_by_id[current_id] = len(resumen_rows)
             resumen_rows.append(resumen_item)
             row_idx += 1
             continue
 
-        first_value = _normalize_text(ws.cell(row_idx, colmap["Id"]).value)
+        first_value = _normalize_text(ws.cell(row_idx, 2).value)
         if first_value == "Fecha":
             row_idx += 1
             continue
 
-        fecha = ws.cell(row_idx, colmap["Id"]).value
-        etapa = ws.cell(row_idx, 8).value  # Columna H en la descarga original
-        registro = ws.cell(row_idx, 21).value  # Columna U en la descarga original
+        fecha = ws.cell(row_idx, 2).value
+        etapa = ws.cell(row_idx, 8).value
+        registro = ws.cell(row_idx, 21).value
 
         is_detail_row = any(
             x not in (None, "")
-            for x in [fecha, etapa, ws.cell(row_idx, 17).value, ws.cell(row_idx, 16).value, registro]
+            for x in [fecha, etapa, ws.cell(row_idx, 16).value, ws.cell(row_idx, 17).value, registro]
         )
 
         if is_detail_row and current_id not in (None, ""):
@@ -216,6 +245,11 @@ def parse_seguimiento_workbook(file_bytes: bytes) -> ParseResult:
                     "Registro": registro,
                 }
             )
+
+            etapa_code = _map_etapa_code(etapa)
+            resumen_pos = resumen_index_by_id.get(current_id)
+            if etapa_code and resumen_pos is not None:
+                resumen_rows[resumen_pos][etapa_code] += 1
 
         row_idx += 1
 
