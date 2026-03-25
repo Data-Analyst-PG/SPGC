@@ -225,10 +225,17 @@ def parse_seguimiento_workbook(file_bytes: bytes) -> ParseResult:
         etapa = ws.cell(row_idx, 8).value
         registro = ws.cell(row_idx, 21).value
 
+        fecha_text = _normalize_text(fecha)
+        is_tracking_banner = fecha_text.lower().startswith("seguimiento")
+
         is_detail_row = any(
             x not in (None, "")
             for x in [fecha, etapa, ws.cell(row_idx, 16).value, ws.cell(row_idx, 17).value, registro]
         )
+
+        if is_tracking_banner:
+            row_idx += 1
+            continue
 
         if is_detail_row and current_id not in (None, ""):
             detalle_rows.append(
