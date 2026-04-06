@@ -1,503 +1,521 @@
 from __future__ import annotations
 
 import io
-import re
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List
 
-import numpy as np
 import pandas as pd
 import streamlit as st
 
 
-# ============================================================
-# Configuracion base
-# ============================================================
-MIN_UTILITY_PCT = 30.0
-USA_TOLERANCE = 200.0
-
-BASE_COLUMNS = [
-    "Estado Factura",
-    "Numero De Viaje",
-    "Servicio",
-    "Sucursal",
-    "Ciudad Origen",
-    "Estado Origen",
-    "Ciudad Destino",
-    "Estado Destino",
-    "Tipo Viaje",
-    "Linea Mexicana",
-    "Linea Americana",
-    "Numero Tracto",
-    "Importe Ingreso",
-    "Importe Costo",
-    "Importe Utilidad",
-    "% Utilidad",
-]
-
-RENAME_MAP = {
-    "Numero De Viaje": "numero_viaje",
-    "Servicio": "servicio",
-    "Sucursal": "sucursal",
-    "Ciudad Origen": "ciudad_origen",
-    "Estado Origen": "estado_origen",
-    "Ciudad Destino": "ciudad_destino",
-    "Estado Destino": "estado_destino",
-    "Tipo Viaje": "tipo_viaje",
-    "Linea Mexicana": "linea_mexicana",
-    "Linea Americana": "linea_americana",
-    "Numero Tracto": "numero_tracto",
-    "Importe Ingreso": "importe_ingreso",
-    "Importe Costo": "importe_costo",
-    "Importe Utilidad": "importe_utilidad",
-    "% Utilidad": "pct_utilidad",
-    "Estado Factura": "estado_factura",
-}
+st.set_page_config(page_title="Lincoln Auditoría", layout="wide")
 
 
-def normalize_text(value: object) -> str:
-    if value is None:
+# -----------------------------
+# Helpers
+# -----------------------------
+def n(value) -> float:
+    try:
+        if pd.isna(value):
+            return 0.0
+        return float(value)
+    except Exception:
+        return 0.0
+
+
+def s(value) -> str:
+    if pd.isna(value):
         return ""
-    text = str(value).strip()
-    replacements = {
-        "á": "a", "é": "e", "í": "i", "ó": "o", "ú": "u",
-        "Á": "A", "É": "E", "Í": "I", "Ó": "O", "Ú": "U",
-        "ñ": "n", "Ñ": "N",
-    }
-    for src, dst in replacements.items():
-        text = text.replace(src, dst)
-    return re.sub(r"\s+", " ", text)
+    return str(value).strip()
 
 
-def canonical_col(name: str) -> str:
-    text = normalize_text(name)
-    text = text.replace("#", "num")
-    text = re.sub(r"[^A-Za-z0-9]+", "_", text)
-    return text.strip("_")
+def money(value: float) -> str:
+    return f"${value:,.2f}"
 
 
-@dataclass
-class AuditIssue:
-    numero_viaje: str
-    regla: str
-    severidad: str
-    observacion: str
-    detalle: str
+def get_col(row: pd.Series, col: str) -> float:
+    return n(row[col]) if col in row.index else 0.0
 
 
-def find_sheet_name(excel_file: pd.ExcelFile) -> str:
-    preferred = ["Companies", "Company", "Reporte", "Datos"]
-    normalized = {normalize_text(s).lower(): s for s in excel_file.sheet_names}
-    for pref in preferred:
-        key = normalize_text(pref).lower()
-        if key in normalized:
-            return normalized[key]
-    return excel_file.sheet_names[0]
+def get_text(row: pd.Series, col: str) -> str:
+    return s(row[col]) if col in row.index else ""
 
 
-def load_input_dataframe(uploaded_file) -> pd.DataFrame:
-    excel = pd.ExcelFile(uploaded_file)
-    sheet_name = find_sheet_name(excel)
-    df = pd.read_excel(excel, sheet_name=sheet_name)
-    df.columns = [canonical_col(c) for c in df.columns]
+def normalize_df(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    for c in df.columns:
+        if isinstance(c, str):
+            df.rename(columns={c: c.strip()}, inplace=True)
     return df
 
 
-def ensure_required_columns(df: pd.DataFrame, required: List[str]) -> Tuple[bool, List[str]]:
-    missing = [col for col in required if col not in df.columns]
-    return len(missing) == 0, missing
+def get_regla(row: pd.Series) -> int:
+    servicio = get_text(row, "Servicio").upper()
+    tracto = get_text(row, "Número Tracto")
+    if "CARRETERA" in servicio and tracto:
+        return 1
+    if "BROKER" in servicio and tracto:
+        return 2
+    if "BROKER" in servicio and not tracto:
+        return 3
+    return 0
 
 
-def first_existing(df: pd.DataFrame, options: List[str]) -> Optional[str]:
-    for col in options:
-        if col in df.columns:
-            return col
-    return None
-
-
-def build_working_df(raw_df: pd.DataFrame) -> pd.DataFrame:
-    df = raw_df.copy()
-
-    # Mapear columnas conocidas a nombres estables internos
-    resolved: Dict[str, str] = {}
-    for original, internal in RENAME_MAP.items():
-        canon = canonical_col(original)
-        if canon in df.columns:
-            resolved[internal] = canon
-
-    required_internals = [
-        "numero_viaje", "servicio", "ciudad_origen", "estado_origen",
-        "ciudad_destino", "estado_destino", "numero_tracto", "importe_ingreso",
-        "importe_costo", "importe_utilidad", "pct_utilidad"
+def route_of(row: pd.Series) -> str:
+    parts = [
+        get_text(row, "Ciudad Origen"),
+        get_text(row, "Estado Origen"),
+        get_text(row, "Ciudad Destino"),
+        get_text(row, "Estado Destino"),
     ]
-    missing = [x for x in required_internals if x not in resolved]
-    if missing:
-        raise ValueError(
-            "Faltan columnas clave para procesar el archivo: " + ", ".join(missing)
+    parts = [p for p in parts if p]
+    return " | ".join(parts)
+
+
+@dataclass
+class AuditRow:
+    auditoria: str
+    viaje: str
+    tracto: str
+    tipo_viaje: str
+    servicio: str
+    regla: int
+    estado: str
+    observacion: str
+    ruta: str
+    metricas: Dict[str, float]
+
+    def as_dict(self) -> Dict[str, object]:
+        return {
+            "Auditoria": self.auditoria,
+            "Número Viaje": self.viaje,
+            "Tracto": self.tracto,
+            "Tipo Viaje": self.tipo_viaje,
+            "Servicio": self.servicio,
+            "Regla": f"R{self.regla}" if self.regla else "R0",
+            "Estado": self.estado,
+            "Observación": self.observacion,
+            "Ruta": self.ruta,
+            **self.metricas,
+        }
+
+
+# -----------------------------
+# Auditorías
+# -----------------------------
+def audit_flete_usa(row: pd.Series) -> AuditRow | None:
+    regla = get_regla(row)
+    viaje = get_text(row, "Número De Viaje")
+    tracto = get_text(row, "Número Tracto")
+    tipo_viaje = get_text(row, "Tipo Viaje")
+    servicio = get_text(row, "Servicio")
+    ruta = route_of(row)
+
+    i_flete = i_fuel = costo = 0.0
+    estado = "OK"
+    obs = ""
+
+    if regla == 1:
+        i_flete = get_col(row, "I FREIGHT USATRANSP USA2")
+        i_fuel = get_col(row, "I FUEL CHARGES DIESEL3")
+        costo = (
+            get_col(row, "C FREIGHT USACT TRANSP USA72")
+            + get_col(row, "C FREIGHT USACT TRANSP USA77")
+            + get_col(row, "C FREIGHT USACT TRANSP USA78")
         )
+        if costo > 0:
+            estado = "Anomalía"
+            obs = "Regla 1: unidad propia con costo de flete USA."
+    elif regla == 2:
+        i_flete = get_col(row, "I FREIGHT USATRANSP USA20")
+        i_fuel = get_col(row, "I FUEL CHARGES DIESEL21")
+        costo = (
+            get_col(row, "C FREIGHT USACT TRANSP USA72")
+            + get_col(row, "C FREIGHT USACT TRANSP USA77")
+            + get_col(row, "C FREIGHT USACT TRANSP USA78")
+        )
+        if costo > 0:
+            estado = "Anomalía"
+            obs = "Regla 2: broker USA con tracto no debería traer costo USA en esas columnas."
+    elif regla == 3:
+        i_flete = get_col(row, "I FREIGHT USATRANSP USA39")
+        i_fuel = get_col(row, "I FUEL CHARGES DIESEL40")
+        costo = get_col(row, "C FREIGHT USACT TRANSP USA77")
+        total_ing = i_flete + i_fuel
+        if total_ing > 0 and costo == 0:
+            estado = "Anomalía"
+            obs = "Regla 3: hay ingreso de flete USA pero no costo."
+        elif total_ing == 0 and costo > 0:
+            estado = "Anomalía"
+            obs = "Regla 3: hay costo de flete USA pero no ingreso."
+        elif total_ing > 0 and abs(total_ing - costo) > 200:
+            estado = "Anomalía"
+            obs = f"Regla 3: diferencia {money(abs(total_ing - costo))} mayor a $200."
+    else:
+        return None
 
-    out = pd.DataFrame()
-    for internal, canon in resolved.items():
-        out[internal] = df[canon]
+    if (i_flete + i_fuel + costo) == 0:
+        return None
 
-    for c in ["sucursal", "tipo_viaje", "linea_mexicana", "linea_americana", "estado_factura"]:
-        if c in resolved:
-            out[c] = df[resolved[c]]
-        else:
-            out[c] = np.nan
-
-    out["ruta"] = (
-        out["ciudad_origen"].fillna("").astype(str).str.strip() + ", " +
-        out["estado_origen"].fillna("").astype(str).str.strip() + " - " +
-        out["ciudad_destino"].fillna("").astype(str).str.strip() + ", " +
-        out["estado_destino"].fillna("").astype(str).str.strip()
-    ).str.replace(r"^, | - , ", "", regex=True)
-
-    numeric_candidates = [
-        "importe_ingreso", "importe_costo", "importe_utilidad", "pct_utilidad"
-    ]
-    for col in numeric_candidates:
-        out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0.0)
-
-    out["tiene_tracto"] = out["numero_tracto"].notna() & (out["numero_tracto"].astype(str).str.strip() != "")
-    out["servicio_norm"] = out["servicio"].fillna("").astype(str).map(normalize_text).str.upper()
-    out["es_broker_usa"] = out["servicio_norm"].eq("BROKER USA")
-    out["es_carretera_usa"] = out["servicio_norm"].eq("CARRETERA USA")
-
-    # Mantener columnas originales de ingresos/costos/acreedores para reglas futuras
-    out = pd.concat([out, df], axis=1)
-    return out
-
-
-def get_col(df: pd.DataFrame, raw_name: str) -> Optional[str]:
-    canon = canonical_col(raw_name)
-    return canon if canon in df.columns else None
-
-
-def sum_columns(df: pd.DataFrame, names: List[str]) -> pd.Series:
-    cols = [get_col(df, n) for n in names]
-    cols = [c for c in cols if c is not None]
-    if not cols:
-        return pd.Series(0.0, index=df.index)
-    temp = df[cols].apply(pd.to_numeric, errors="coerce").fillna(0.0)
-    return temp.sum(axis=1)
-
-
-def add_flete_usa_columns(df: pd.DataFrame) -> pd.DataFrame:
-    out = df.copy()
-
-    usa_propio_income_cols = [
-        "I FREIGHT USATRANSP USA2",
-        "I FUEL CHARGES DIESEL3",
-    ]
-    usa_broker_propio_income_cols = [
-        "I FREIGHT USATRANSP USA20",
-        "I FUEL CHARGES DIESEL21",
-    ]
-    usa_broker_tercero_income_cols = [
-        "I FREIGHT USATRANSP USA39",
-        "I FUEL CHARGES DIESEL40",
-        "I FREIGHT USATRANSP USA56",
-    ]
-    usa_cost_cols = [
-        "C FREIGHT USACT TRANSP USA72",
-        "C FREIGHT USACT TRANSP USA77",
-        "C FREIGHT USACT TRANSP USA78",
-    ]
-
-    out["usa_ing_propio"] = sum_columns(out, usa_propio_income_cols)
-    out["usa_ing_broker_propio"] = sum_columns(out, usa_broker_propio_income_cols)
-    out["usa_ing_broker_tercero"] = sum_columns(out, usa_broker_tercero_income_cols)
-    out["usa_cost_total"] = sum_columns(out, usa_cost_cols)
-
-    out["escenario_flete_usa"] = np.select(
-        [
-            out["es_carretera_usa"] & out["tiene_tracto"],
-            out["es_broker_usa"] & out["tiene_tracto"],
-            out["es_broker_usa"] & ~out["tiene_tracto"],
-        ],
-        [
-            "CARRETERA_USA_PROPIO",
-            "BROKER_USA_PROPIO",
-            "BROKER_USA_TERCERO",
-        ],
-        default="OTRO",
+    return AuditRow(
+        auditoria="Flete USA",
+        viaje=viaje,
+        tracto=tracto,
+        tipo_viaje=tipo_viaje,
+        servicio=servicio,
+        regla=regla,
+        estado=estado,
+        observacion=obs,
+        ruta=ruta,
+        metricas={
+            "I Flete USA": i_flete,
+            "I Fuel": i_fuel,
+            "C Flete USA": costo,
+            "Diferencia": (i_flete + i_fuel) - costo,
+        },
     )
+
+
+def audit_flete_mex(row: pd.Series) -> AuditRow | None:
+    regla = get_regla(row)
+    viaje = get_text(row, "Número De Viaje")
+    tracto = get_text(row, "Número Tracto")
+    tipo_viaje = get_text(row, "Tipo Viaje")
+    servicio = get_text(row, "Servicio")
+    ruta = route_of(row)
+
+    ingreso = costo = 0.0
+    estado = "OK"
+    obs = ""
+
+    if regla == 1:
+        ingreso = get_col(row, "I FREIGHT MEXTRANSP MEX1")
+    elif regla == 2:
+        ingreso = get_col(row, "I FREIGHT MEXTRANSP MEX19")
+        costo = get_col(row, "C FREIGHT MEXCT TRANSP MEX76")
+    elif regla == 3:
+        ingreso = get_col(row, "I FREIGHT MEXTRANSP MEX38") + get_col(row, "I FREIGHT MEXTRANSP MEX61")
+        costo = get_col(row, "C FREIGHT MEXCT TRANSP MEX76") + get_col(row, "C FREIGHT MEXCT TRANSP MEX84")
+    else:
+        return None
+
+    if ingreso == 0 and costo == 0:
+        return None
+
+    diff = ingreso - costo
+    if ingreso > 0 and costo == 0 and regla in (2, 3):
+        estado = "Anomalía"
+        obs = "Flete MX con ingreso pero sin costo de tercero."
+    elif ingreso == 0 and costo > 0:
+        estado = "Anomalía"
+        obs = "Flete MX con costo pero sin ingreso."
+    elif abs(diff) > 200:
+        estado = "Anomalía"
+        obs = f"Flete MX con diferencia {money(abs(diff))} mayor a $200."
+
+    return AuditRow(
+        auditoria="Flete MX",
+        viaje=viaje,
+        tracto=tracto,
+        tipo_viaje=tipo_viaje,
+        servicio=servicio,
+        regla=regla,
+        estado=estado,
+        observacion=obs,
+        ruta=ruta,
+        metricas={
+            "I Flete MX": ingreso,
+            "C Flete MX": costo,
+            "Diferencia": diff,
+        },
+    )
+
+
+def audit_cruce(row: pd.Series) -> AuditRow | None:
+    regla = get_regla(row)
+    viaje = get_text(row, "Número De Viaje")
+    tracto = get_text(row, "Número Tracto")
+    tipo_viaje = get_text(row, "Tipo Viaje")
+    servicio = get_text(row, "Servicio")
+    ruta = route_of(row)
+
+    i_carg = i_vac = costo = 0.0
+    estado = "OK"
+    obs = ""
+
+    if regla == 1:
+        i_vac = get_col(row, "I CROSS BORDER EMPTYCRUCE VACIO6")
+        i_carg = get_col(row, "I CROSS BORDER LOADEDCRUCE CARGADO7")
+    elif regla == 2:
+        i_vac = get_col(row, "I CROSS BORDER EMPTYCRUCE VACIO24")
+        i_carg = get_col(row, "I CROSS BORDER LOADEDCRUCE CARGADO25")
+    elif regla == 3:
+        i_vac = get_col(row, "I CROSS BORDER EMPTYCRUCE VACIO43")
+        i_carg = get_col(row, "I CROSS BORDER LOADEDCRUCE CARGADO44")
+        costo = get_col(row, "C CROSS BORDER LOADEDCT CRUCE CARGADO73")
+    else:
+        return None
+
+    ingreso = i_carg + i_vac
+    if ingreso == 0 and costo == 0:
+        return None
+
+    diff = ingreso - costo
+    if regla == 3:
+        if ingreso > 0 and costo == 0:
+            estado = "Anomalía"
+            obs = "Cruce con ingreso pero sin costo."
+        elif ingreso == 0 and costo > 0:
+            estado = "Anomalía"
+            obs = "Cruce con costo pero sin ingreso."
+        elif abs(diff) > 200:
+            estado = "Anomalía"
+            obs = f"Cruce con diferencia {money(abs(diff))} mayor a $200."
+        if costo > 400:
+            estado = "Anomalía"
+            extra = " Costo de cruce fuera del rango esperado."
+            obs = (obs + extra).strip()
+
+    return AuditRow(
+        auditoria="Cruce",
+        viaje=viaje,
+        tracto=tracto,
+        tipo_viaje=tipo_viaje,
+        servicio=servicio,
+        regla=regla,
+        estado=estado,
+        observacion=obs,
+        ruta=ruta,
+        metricas={
+            "I Cruce Cargado": i_carg,
+            "I Cruce Vacío": i_vac,
+            "C Cruce": costo,
+            "Diferencia": diff,
+        },
+    )
+
+
+def audit_small_concept(row: pd.Series, concepto: str) -> AuditRow | None:
+    regla = get_regla(row)
+    viaje = get_text(row, "Número De Viaje")
+    tracto = get_text(row, "Número Tracto")
+    tipo_viaje = get_text(row, "Tipo Viaje")
+    servicio = get_text(row, "Servicio")
+    ruta = route_of(row)
+
+    config = {
+        "Extra Stop": {
+            1: ("I EXTRA STOPPARADA EXTRA5", None),
+            2: ("I EXTRA STOPPARADA EXTRA23", "C EXTRA STOPCT PARADA EXTRA70"),
+            3: ("I EXTRA STOPPARADA EXTRA42", "C EXTRA STOPCT PARADA EXTRA75"),
+            "tol": 50,
+            "max_ing": 300,
+        },
+        "TNU": {
+            1: ("I TNU - TRUCK NOT USEDMOVIMIENTO EN FALSO14", None),
+            2: ("I TNU - TRUCK NOT USEDMOVIMIENTO EN FALSO32", None),
+            3: ("I TNU - TRUCK NOT USEDMOVIMIENTO EN FALSO51", "C TNU - TRUCK NOT USEDCT MOVIMIENTO EN FALSO90"),
+            "tol": 50,
+            "max_ing": None,
+        },
+        "Handling": {
+            1: ("I HANDLING CHARGESMANIOBRAS13", None),
+            2: ("I HANDLING CHARGESMANIOBRAS31", None),
+            3: ("I HANDLING CHARGESMANIOBRAS50", "C HANDLING CHARGESCT MANIOBRAS89"),
+            "tol": 50,
+            "max_ing": 1500,
+        },
+    }
+    cfg = config[concepto]
+    if regla not in (1, 2, 3):
+        return None
+
+    ing_col, cost_col = cfg[regla]
+    ingreso = get_col(row, ing_col) if ing_col else 0.0
+    costo = get_col(row, cost_col) if cost_col else 0.0
+    if ingreso == 0 and costo == 0:
+        return None
+
+    diff = ingreso - costo
+    estado = "OK"
+    obs = ""
+    tol = cfg["tol"]
+    max_ing = cfg["max_ing"]
+
+    if costo > 0 and ingreso == 0:
+        estado = "Anomalía"
+        obs = f"{concepto} con costo sin ingreso."
+    elif regla == 3 and ingreso > 0 and costo == 0:
+        estado = "Anomalía"
+        obs = f"{concepto} con ingreso de tercero pero sin costo."
+    elif max_ing is not None and ingreso > max_ing:
+        estado = "Anomalía"
+        obs = f"{concepto} con ingreso alto {money(ingreso)}."
+    elif abs(diff) > tol:
+        estado = "Anomalía"
+        obs = f"{concepto} con diferencia {money(abs(diff))} mayor a ${tol}."
+
+    return AuditRow(
+        auditoria=concepto,
+        viaje=viaje,
+        tracto=tracto,
+        tipo_viaje=tipo_viaje,
+        servicio=servicio,
+        regla=regla,
+        estado=estado,
+        observacion=obs,
+        ruta=ruta,
+        metricas={
+            f"I {concepto}": ingreso,
+            f"C {concepto}": costo,
+            "Diferencia": diff,
+        },
+    )
+
+
+def audit_utilidad(df: pd.DataFrame) -> pd.DataFrame:
+    cols = [c for c in ["Número De Viaje", "Número Tracto", "Servicio", "Tipo Viaje", "% Utilidad", "Importe Ingreso", "Importe Costo", "Importe Utilidad"] if c in df.columns]
+    out = df[cols].copy()
+    if "% Utilidad" in out.columns:
+        out["% Utilidad Num"] = out["% Utilidad"].apply(n)
+    else:
+        ing = out["Importe Ingreso"].apply(n) if "Importe Ingreso" in out.columns else 0
+        uti = out["Importe Utilidad"].apply(n) if "Importe Utilidad" in out.columns else 0
+        out["% Utilidad Num"] = (uti / ing.replace(0, pd.NA)) * 100
+        out["% Utilidad Num"] = out["% Utilidad Num"].fillna(0)
+    out["Estado"] = out["% Utilidad Num"].apply(lambda x: "Anomalía" if x < 30 else "OK")
+    out["Observación"] = out["% Utilidad Num"].apply(lambda x: "Utilidad menor a 30%." if x < 30 else "")
     return out
 
 
-def build_audit(df: pd.DataFrame, min_utility_pct: float = MIN_UTILITY_PCT, usa_tolerance: float = USA_TOLERANCE) -> pd.DataFrame:
-    issues: List[AuditIssue] = []
+def run_all_audits(df: pd.DataFrame) -> Dict[str, pd.DataFrame]:
+    results: Dict[str, List[Dict[str, object]]] = {
+        "Flete USA": [],
+        "Flete MX": [],
+        "Cruce": [],
+        "Extra Stop": [],
+        "TNU": [],
+        "Handling": [],
+    }
 
     for _, row in df.iterrows():
-        viaje = str(row.get("numero_viaje", ""))
+        for fn, key in [
+            (audit_flete_usa, "Flete USA"),
+            (audit_flete_mex, "Flete MX"),
+            (audit_cruce, "Cruce"),
+        ]:
+            r = fn(row)
+            if r:
+                results[key].append(r.as_dict())
 
-        # Regla 1: utilidad minima
-        pct_util = float(row.get("pct_utilidad", 0) or 0)
-        if pct_util < min_utility_pct:
-            issues.append(AuditIssue(
-                numero_viaje=viaje,
-                regla="UTILIDAD_MINIMA",
-                severidad="Alta",
-                observacion="Utilidad menor al 30%.",
-                detalle=f"% utilidad actual: {pct_util:.2f}% (minimo esperado {min_utility_pct:.2f}%)",
-            ))
+        for concepto in ["Extra Stop", "TNU", "Handling"]:
+            r = audit_small_concept(row, concepto)
+            if r:
+                results[concepto].append(r.as_dict())
 
-        escenario = row.get("escenario_flete_usa", "OTRO")
-        usa_propio = float(row.get("usa_ing_propio", 0) or 0)
-        usa_broker_propio = float(row.get("usa_ing_broker_propio", 0) or 0)
-        usa_broker_tercero = float(row.get("usa_ing_broker_tercero", 0) or 0)
-        usa_cost_total = float(row.get("usa_cost_total", 0) or 0)
+    out = {k: pd.DataFrame(v) for k, v in results.items()}
+    out["Utilidad"] = audit_utilidad(df)
 
-        # Regla 2: coherencia de columnas de ingreso por escenario
-        if escenario == "CARRETERA_USA_PROPIO":
-            if usa_broker_propio > 0 or usa_broker_tercero > 0:
-                issues.append(AuditIssue(
-                    numero_viaje=viaje,
-                    regla="FLETE_USA_INGRESO_CRUZADO",
-                    severidad="Media",
-                    observacion="Ingreso de Flete USA capturado en columna distinta al escenario esperado.",
-                    detalle=(
-                        f"Escenario esperado: carretera usa con unidad propia. "
-                        f"Detectado broker propio={usa_broker_propio:.2f}, broker tercero={usa_broker_tercero:.2f}."
-                    ),
-                ))
-            if usa_cost_total > 0:
-                issues.append(AuditIssue(
-                    numero_viaje=viaje,
-                    regla="FLETE_USA_COSTO_NO_ESPERADO",
-                    severidad="Media",
-                    observacion="Hay costo de Flete USA en un viaje que luce como unidad propia.",
-                    detalle=f"Costo detectado: {usa_cost_total:.2f}",
-                ))
-
-        elif escenario == "BROKER_USA_PROPIO":
-            if usa_propio > 0 or usa_broker_tercero > 0:
-                issues.append(AuditIssue(
-                    numero_viaje=viaje,
-                    regla="FLETE_USA_INGRESO_CRUZADO",
-                    severidad="Media",
-                    observacion="Ingreso de Flete USA capturado en columna distinta al escenario esperado.",
-                    detalle=(
-                        f"Escenario esperado: broker usa con unidad propia. "
-                        f"Detectado carretera propio={usa_propio:.2f}, broker tercero={usa_broker_tercero:.2f}."
-                    ),
-                ))
-            if usa_cost_total > 0:
-                issues.append(AuditIssue(
-                    numero_viaje=viaje,
-                    regla="FLETE_USA_COSTO_NO_ESPERADO",
-                    severidad="Media",
-                    observacion="Hay costo de Flete USA donde no deberia existir por unidad propia.",
-                    detalle=f"Costo detectado: {usa_cost_total:.2f}",
-                ))
-
-        elif escenario == "BROKER_USA_TERCERO":
-            if usa_broker_tercero <= 0:
-                issues.append(AuditIssue(
-                    numero_viaje=viaje,
-                    regla="FLETE_USA_INGRESO_FALTANTE",
-                    severidad="Alta",
-                    observacion="Escenario broker usa tercero sin ingreso en la columna esperada.",
-                    detalle="No se detecto monto en las columnas de ingreso de broker tercero/filial.",
-                ))
-            if usa_cost_total <= 0:
-                issues.append(AuditIssue(
-                    numero_viaje=viaje,
-                    regla="FLETE_USA_COSTO_FALTANTE",
-                    severidad="Alta",
-                    observacion="Broker USA con tercero/filial sin costo de Flete USA.",
-                    detalle="Se esperaba costo porque el tractor no viene capturado.",
-                ))
-            elif abs(usa_broker_tercero - usa_cost_total) > usa_tolerance:
-                issues.append(AuditIssue(
-                    numero_viaje=viaje,
-                    regla="FLETE_USA_DIFERENCIA_COSTO",
-                    severidad="Alta",
-                    observacion="La diferencia entre ingreso y costo de Flete USA excede la tolerancia.",
-                    detalle=(
-                        f"Ingreso broker tercero={usa_broker_tercero:.2f}, "
-                        f"costo={usa_cost_total:.2f}, tolerancia={usa_tolerance:.2f}."
-                    ),
-                ))
-            if usa_propio > 0 or usa_broker_propio > 0:
-                issues.append(AuditIssue(
-                    numero_viaje=viaje,
-                    regla="FLETE_USA_INGRESO_CRUZADO",
-                    severidad="Media",
-                    observacion="Hay montos en columnas de ingreso de otro escenario.",
-                    detalle=(
-                        f"Carretera propio={usa_propio:.2f}, broker propio={usa_broker_propio:.2f}."
-                    ),
-                ))
-
-    audit_df = pd.DataFrame([issue.__dict__ for issue in issues])
-    if audit_df.empty:
-        return pd.DataFrame(columns=["numero_viaje", "regla", "severidad", "observacion", "detalle"])
-    return audit_df.sort_values(["severidad", "numero_viaje", "regla"], ascending=[True, True, True]).reset_index(drop=True)
-
-
-def compare_with_manual(audit_df: pd.DataFrame, uploaded_file) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    try:
-        excel = pd.ExcelFile(uploaded_file)
-        if "Auditoria" not in excel.sheet_names:
-            return pd.DataFrame(), pd.DataFrame()
-        manual = pd.read_excel(excel, sheet_name="Auditoria")
-        manual.columns = [canonical_col(c) for c in manual.columns]
-        viaje_col = first_existing(manual, ["numero_de_viaje", "numero_viaje"])
-        if not viaje_col:
-            return pd.DataFrame(), pd.DataFrame()
-        manual_viajes = (
-            manual[viaje_col]
-            .dropna()
-            .astype(str)
-            .str.strip()
-            .drop_duplicates()
-            .to_frame(name="numero_viaje")
-        )
-        auto_viajes = audit_df[["numero_viaje"]].drop_duplicates() if not audit_df.empty else pd.DataFrame(columns=["numero_viaje"])
-
-        detectados = manual_viajes.merge(auto_viajes, on="numero_viaje", how="inner")
-        faltantes = manual_viajes.merge(auto_viajes, on="numero_viaje", how="left", indicator=True)
-        faltantes = faltantes[faltantes["_merge"] == "left_only"].drop(columns=["_merge"])
-        return detectados, faltantes
-    except Exception:
-        return pd.DataFrame(), pd.DataFrame()
-
-
-def to_excel_bytes(summary_df: pd.DataFrame, audit_df: pd.DataFrame, detail_df: pd.DataFrame) -> bytes:
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        summary_df.to_excel(writer, sheet_name="Resumen", index=False)
-        audit_df.to_excel(writer, sheet_name="Auditoria_Automatica", index=False)
-        detail_df.to_excel(writer, sheet_name="Detalle_Trabajo", index=False)
-    output.seek(0)
-    return output.getvalue()
-
-
-def render_summary(df: pd.DataFrame, audit_df: pd.DataFrame, min_utility_pct: float = MIN_UTILITY_PCT) -> pd.DataFrame:
-    total_viajes = len(df)
-    viajes_con_hallazgo = audit_df["numero_viaje"].nunique() if not audit_df.empty else 0
-    total_hallazgos = len(audit_df)
-    utilidad_baja = int((df["pct_utilidad"] < min_utility_pct).sum())
-    broker_tercero = int((df["escenario_flete_usa"] == "BROKER_USA_TERCERO").sum())
-    broker_sin_costo = int(((df["escenario_flete_usa"] == "BROKER_USA_TERCERO") & (df["usa_cost_total"] <= 0)).sum())
-
-    return pd.DataFrame({
-        "indicador": [
-            "Viajes analizados",
-            "Viajes con hallazgo",
-            "Hallazgos totales",
-            "Viajes con utilidad < 30%",
-            "Viajes Broker USA tercero/filial",
-            "Broker USA tercero/filial sin costo",
-        ],
-        "valor": [
-            total_viajes,
-            viajes_con_hallazgo,
-            total_hallazgos,
-            utilidad_baja,
-            broker_tercero,
-            broker_sin_costo,
-        ],
-    })
-
-
-def main() -> None:
-    st.set_page_config(page_title="Pruebas Auditoria Lincoln", layout="wide")
-    st.title("Pruebas de auditoria Lincoln")
-    st.caption(
-        "Esta pagina sirve para probar reglas basicas de auditoria sobre el archivo descargado del sistema. "
-        "Se enfoca primero en utilidad minima y Flete USA segun la logica documentada."
-    )
-
-    with st.sidebar:
-        st.subheader("Parametros")
-        min_utility_pct = st.number_input("Utilidad minima (%)", min_value=0.0, max_value=100.0, value=MIN_UTILITY_PCT, step=1.0)
-        usa_tolerance = st.number_input("Tolerancia Flete USA", min_value=0.0, value=USA_TOLERANCE, step=10.0)
-        st.markdown("---")
-        st.write("Archivo esperado:")
-        st.write("- Excel descargado del sistema")
-        st.write("- Hoja base tipo Companies")
-
-    uploaded_file = st.file_uploader("Sube el archivo Excel del sistema", type=["xlsx"])
-    if uploaded_file is None:
-        st.info("Sube un archivo para ejecutar la auditoria.")
-        return
-
-    try:
-        raw_df = load_input_dataframe(uploaded_file)
-        working_df = build_working_df(raw_df)
-        working_df = add_flete_usa_columns(working_df)
-        audit_df = build_audit(working_df, min_utility_pct=float(min_utility_pct), usa_tolerance=float(usa_tolerance))
-        summary_df = render_summary(working_df, audit_df, min_utility_pct=float(min_utility_pct))
-    except Exception as exc:
-        st.error(f"No se pudo procesar el archivo: {exc}")
-        return
-
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Viajes analizados", len(working_df))
-    c2.metric("Viajes con hallazgo", audit_df["numero_viaje"].nunique() if not audit_df.empty else 0)
-    c3.metric("Hallazgos totales", len(audit_df))
-
-    st.subheader("Resumen")
-    st.dataframe(summary_df, use_container_width=True, hide_index=True)
-
-    st.subheader("Hallazgos detectados")
-    if audit_df.empty:
-        st.success("No se detectaron hallazgos con las reglas actuales.")
+    if "Estatus" in df.columns:
+        cancel = df[df["Estatus"].astype(str).str.upper().str.contains("CANCEL", na=False)].copy()
+        out["Cancelados"] = cancel
     else:
-        regla_sel = st.multiselect(
-            "Filtrar por regla",
-            options=sorted(audit_df["regla"].dropna().unique().tolist()),
-            default=sorted(audit_df["regla"].dropna().unique().tolist()),
-        )
-        sev_sel = st.multiselect(
-            "Filtrar por severidad",
-            options=sorted(audit_df["severidad"].dropna().unique().tolist()),
-            default=sorted(audit_df["severidad"].dropna().unique().tolist()),
-        )
-        filtered = audit_df[
-            audit_df["regla"].isin(regla_sel) &
-            audit_df["severidad"].isin(sev_sel)
-        ].copy()
-        st.dataframe(filtered, use_container_width=True, hide_index=True)
+        out["Cancelados"] = pd.DataFrame()
 
-    st.subheader("Detalle de trabajo")
-    detail_cols = [
-        "numero_viaje", "servicio", "numero_tracto", "ruta", "pct_utilidad",
-        "escenario_flete_usa", "usa_ing_propio", "usa_ing_broker_propio",
-        "usa_ing_broker_tercero", "usa_cost_total",
-    ]
-    detail_df = working_df[detail_cols].copy().sort_values(["numero_viaje"])
-    st.dataframe(detail_df, use_container_width=True, hide_index=True)
+    anomalies = []
+    for name, audit_df in out.items():
+        if name == "Cancelados":
+            continue
+        if "Estado" in audit_df.columns:
+            temp = audit_df[audit_df["Estado"] == "Anomalía"].copy()
+            if not temp.empty:
+                temp.insert(0, "Auditoría", name)
+                anomalies.append(temp)
+    out["Anomalías"] = pd.concat(anomalies, ignore_index=True) if anomalies else pd.DataFrame()
+    return out
 
-    # Comparacion opcional con una hoja manual llamada Auditoria en el mismo archivo
-    detectados, faltantes = compare_with_manual(audit_df, uploaded_file)
-    if not detectados.empty or not faltantes.empty:
-        st.subheader("Comparacion contra hoja manual 'Auditoria'")
-        cc1, cc2 = st.columns(2)
-        with cc1:
-            st.write("Viajes manuales tambien detectados")
-            st.dataframe(detectados, use_container_width=True, hide_index=True)
-        with cc2:
-            st.write("Viajes presentes en manual pero no detectados aun")
-            st.dataframe(faltantes, use_container_width=True, hide_index=True)
 
-    st.download_button(
-        label="Descargar resultado en Excel",
-        data=to_excel_bytes(summary_df, audit_df, detail_df),
-        file_name="resultado_auditoria_lincoln.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+def to_excel_bytes(results: Dict[str, pd.DataFrame]) -> bytes:
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        for name, df in results.items():
+            export_df = df.copy()
+            export_df.to_excel(writer, sheet_name=name[:31], index=False)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+# -----------------------------
+# UI
+# -----------------------------
+st.title("Lincoln — Auditoría de viajes")
+st.caption("Versión en Python/Streamlit convertida desde tu HTML para que la pruebes dentro de tu app.")
+
+with st.expander("Reglas base incluidas", expanded=False):
+    st.markdown(
+        """
+- **Regla 1:** Carretera USA + unidad capturada.
+- **Regla 2:** Broker USA + unidad capturada.
+- **Regla 3:** Broker USA + sin unidad.
+- Tolerancias base: **$200** para Flete USA, Flete MX y Cruce; **$50** para Extra Stop, TNU y Handling.
+- Auditoría adicional: **utilidad menor a 30%**.
+        """
     )
 
-    with st.expander("Notas de esta version"):
-        st.write("- Ya incluye la regla de utilidad minima.")
-        st.write("- Ya incluye la logica base de Flete USA segun servicio y numero de tracto.")
-        st.write("- Ya valida costo esperado en Broker USA con tercero/filial.")
-        st.write("- Ya compara ingreso vs costo con tolerancia configurable.")
-        st.write("- Se puede extender despues para Flete Mex, Cruce y otros conceptos.")
+uploaded = st.file_uploader("Sube el Excel de sistema", type=["xlsx", "xls"])
 
+if uploaded:
+    try:
+        xls = pd.ExcelFile(uploaded)
+        sheet_name = "Companies" if "Companies" in xls.sheet_names else xls.sheet_names[0]
+        df = pd.read_excel(uploaded, sheet_name=sheet_name)
+        df = normalize_df(df)
+        results = run_all_audits(df)
 
-if __name__ == "__main__":
-    main()
+        anom = results["Anomalías"]
+        total_viajes = len(df)
+        cancelados = len(results["Cancelados"])
+        viajes_con_anom = anom["Número De Viaje"].nunique() if not anom.empty and "Número De Viaje" in anom.columns else 0
+        viajes_ok = max(total_viajes - viajes_con_anom - cancelados, 0)
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Total viajes", total_viajes)
+        c2.metric("Sin anomalía", viajes_ok)
+        c3.metric("Con anomalía", viajes_con_anom)
+        c4.metric("Cancelados", cancelados)
+
+        tab_names = ["Anomalías", "Utilidad", "Flete USA", "Flete MX", "Cruce", "Extra Stop", "TNU", "Handling", "Cancelados"]
+        tabs = st.tabs(tab_names)
+
+        for tab, name in zip(tabs, tab_names):
+            with tab:
+                data = results[name]
+                if data.empty:
+                    st.info("Sin datos en esta sección.")
+                    continue
+
+                if "Estado" in data.columns:
+                    filtro = st.radio(
+                        f"Filtro {name}",
+                        ["Todos", "Solo anomalías", "Solo OK"],
+                        horizontal=True,
+                        key=f"filtro_{name}",
+                    )
+                    if filtro == "Solo anomalías":
+                        data = data[data["Estado"] == "Anomalía"]
+                    elif filtro == "Solo OK":
+                        data = data[data["Estado"] == "OK"]
+
+                st.dataframe(data, use_container_width=True, hide_index=True)
+
+        st.download_button(
+            "Descargar resultado de auditoría",
+            data=to_excel_bytes(results),
+            file_name="Auditoria_Lincoln_Streamlit.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
+    except Exception as e:
+        st.error(f"No pude procesar el archivo: {e}")
+else:
+    st.info("Sube el archivo Excel para comenzar.")
