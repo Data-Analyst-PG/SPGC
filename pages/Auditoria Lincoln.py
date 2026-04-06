@@ -369,7 +369,9 @@ def run_all_audits(df: pd.DataFrame) -> Dict[str, pd.DataFrame]:
         if not audit_df.empty and "Estado" in audit_df.columns:
             temp = audit_df[audit_df["Estado"] == "Anomalía"].copy()
             if not temp.empty:
-                temp.insert(0, "Auditoría", name)
+                # La columna "Auditoría" ya viene desde as_dict(); no volver a insertarla.
+                if "Auditoría" not in temp.columns:
+                    temp.insert(0, "Auditoría", name)
                 anomaly_blocks.append(temp)
     out["Anomalías"] = pd.concat(anomaly_blocks, ignore_index=True) if anomaly_blocks else pd.DataFrame()
     return out
