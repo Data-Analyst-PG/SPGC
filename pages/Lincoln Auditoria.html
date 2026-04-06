@@ -1,0 +1,1434 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lincoln — Auditoría de Viajes</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0a0c10;
+    --surface: #12151c;
+    --surface2: #1a1e28;
+    --border: #252a38;
+    --accent: #3b82f6;
+    --accent2: #22d3ee;
+    --ok: #10b981;
+    --warn: #f59e0b;
+    --error: #ef4444;
+    --text: #e2e8f0;
+    --muted: #64748b;
+    --mono: 'IBM Plex Mono', monospace;
+    --sans: 'IBM Plex Sans', sans-serif;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: var(--sans);
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    font-size: 14px;
+  }
+
+  /* ── HEADER ── */
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 28px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+    position: sticky;
+    top: 0;
+    z-index: 100;
+  }
+
+  .logo {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-family: var(--mono);
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: .05em;
+    color: var(--accent2);
+  }
+
+  .logo-icon {
+    width: 28px; height: 28px;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    border-radius: 6px;
+    display: grid;
+    place-items: center;
+    font-size: 14px;
+  }
+
+  .header-right {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .badge {
+    font-family: var(--mono);
+    font-size: 11px;
+    padding: 3px 8px;
+    border-radius: 4px;
+    background: rgba(59,130,246,.15);
+    color: var(--accent);
+    border: 1px solid rgba(59,130,246,.3);
+  }
+
+  /* ── LAYOUT ── */
+  .app {
+    display: grid;
+    grid-template-columns: 240px 1fr;
+    height: calc(100vh - 57px);
+  }
+
+  /* ── SIDEBAR ── */
+  aside {
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    padding: 20px 0;
+    overflow-y: auto;
+  }
+
+  .nav-group-label {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--muted);
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    padding: 0 18px 8px;
+    margin-top: 16px;
+  }
+
+  .nav-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 18px;
+    cursor: pointer;
+    transition: background .15s;
+    border-left: 2px solid transparent;
+    color: var(--muted);
+    font-size: 13px;
+    font-weight: 500;
+  }
+
+  .nav-item:hover { background: var(--surface2); color: var(--text); }
+
+  .nav-item.active {
+    background: rgba(59,130,246,.1);
+    border-left-color: var(--accent);
+    color: var(--text);
+  }
+
+  .nav-icon { font-size: 15px; min-width: 20px; text-align: center; }
+
+  .nav-count {
+    margin-left: auto;
+    font-family: var(--mono);
+    font-size: 10px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1px 6px;
+  }
+
+  .nav-count.error { background: rgba(239,68,68,.15); border-color: rgba(239,68,68,.3); color: var(--error); }
+
+  /* ── MAIN ── */
+  main {
+    overflow-y: auto;
+    background: var(--bg);
+  }
+
+  /* ── UPLOAD ZONE ── */
+  .upload-zone {
+    margin: 28px;
+    border: 2px dashed var(--border);
+    border-radius: 12px;
+    padding: 40px 28px;
+    text-align: center;
+    transition: border-color .2s, background .2s;
+    cursor: pointer;
+  }
+
+  .upload-zone:hover, .upload-zone.drag {
+    border-color: var(--accent);
+    background: rgba(59,130,246,.04);
+  }
+
+  .upload-icon { font-size: 36px; margin-bottom: 12px; }
+
+  .upload-title { font-size: 16px; font-weight: 600; margin-bottom: 6px; }
+
+  .upload-sub { color: var(--muted); font-size: 12px; margin-bottom: 20px; }
+
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 16px;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    border: none;
+    transition: all .15s;
+    font-family: var(--sans);
+  }
+
+  .btn-primary {
+    background: var(--accent);
+    color: #fff;
+  }
+  .btn-primary:hover { background: #2563eb; }
+
+  .btn-ghost {
+    background: transparent;
+    color: var(--muted);
+    border: 1px solid var(--border);
+  }
+  .btn-ghost:hover { background: var(--surface2); color: var(--text); }
+
+  /* ── PROGRESS BAR ── */
+  .progress-bar {
+    height: 3px;
+    background: var(--border);
+    border-radius: 2px;
+    overflow: hidden;
+    margin: 0 28px;
+  }
+
+  .progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--accent), var(--accent2));
+    border-radius: 2px;
+    transition: width .4s ease;
+  }
+
+  /* ── STATS ROW ── */
+  .stats-row {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
+    padding: 20px 28px;
+  }
+
+  .stat-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+  }
+
+  .stat-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 8px; font-family: var(--mono); }
+  .stat-value { font-size: 26px; font-weight: 600; font-family: var(--mono); line-height: 1; }
+  .stat-value.ok { color: var(--ok); }
+  .stat-value.err { color: var(--error); }
+  .stat-value.warn { color: var(--warn); }
+  .stat-sub { font-size: 11px; color: var(--muted); margin-top: 4px; }
+
+  /* ── SECTION ── */
+  .section {
+    padding: 0 28px 28px;
+  }
+
+  .section-title {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 13px;
+    font-weight: 600;
+    font-family: var(--mono);
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: .08em;
+    margin-bottom: 12px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .section-title span { color: var(--text); }
+
+  /* ── TABLE ── */
+  .table-wrap { overflow-x: auto; border-radius: 10px; border: 1px solid var(--border); }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+  }
+
+  thead tr {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+  }
+
+  th {
+    text-align: left;
+    padding: 10px 12px;
+    font-family: var(--mono);
+    font-size: 10px;
+    font-weight: 500;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    white-space: nowrap;
+  }
+
+  td {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+    font-family: var(--mono);
+    font-size: 11.5px;
+    white-space: nowrap;
+    vertical-align: middle;
+  }
+
+  tr:last-child td { border-bottom: none; }
+
+  tbody tr { transition: background .1s; }
+  tbody tr:hover { background: var(--surface2); }
+
+  /* ── STATUS CHIPS ── */
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 7px;
+    border-radius: 20px;
+    font-size: 10px;
+    font-family: var(--mono);
+    font-weight: 500;
+  }
+
+  .chip-ok { background: rgba(16,185,129,.12); color: var(--ok); border: 1px solid rgba(16,185,129,.25); }
+  .chip-err { background: rgba(239,68,68,.12); color: var(--error); border: 1px solid rgba(239,68,68,.25); }
+  .chip-warn { background: rgba(245,158,11,.12); color: var(--warn); border: 1px solid rgba(245,158,11,.25); }
+
+  .dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+
+  /* ── AMOUNT ── */
+  .amt { text-align: right; }
+  .amt-pos { color: var(--ok); }
+  .amt-neg { color: var(--error); }
+  .amt-zero { color: var(--muted); }
+
+  /* ── ANOMALY ROW ── */
+  tr.anomaly { background: rgba(239,68,68,.04) !important; }
+  tr.anomaly:hover { background: rgba(239,68,68,.08) !important; }
+
+  /* ── TABS ── */
+  .tabs {
+    display: flex;
+    gap: 2px;
+    border-bottom: 1px solid var(--border);
+    padding: 0 28px;
+    background: var(--surface);
+    overflow-x: auto;
+  }
+
+  .tab {
+    padding: 12px 16px;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    color: var(--muted);
+    white-space: nowrap;
+    transition: all .15s;
+  }
+
+  .tab:hover { color: var(--text); }
+  .tab.active { color: var(--accent2); border-bottom-color: var(--accent2); }
+
+  /* ── FILTER ROW ── */
+  .filter-row {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    padding: 16px 28px;
+    flex-wrap: wrap;
+  }
+
+  .filter-row input, .filter-row select {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 7px 12px;
+    font-size: 12px;
+    color: var(--text);
+    font-family: var(--sans);
+    outline: none;
+    transition: border-color .15s;
+  }
+
+  .filter-row input:focus, .filter-row select:focus { border-color: var(--accent); }
+
+  .filter-row input { width: 220px; }
+
+  /* ── ANOMALY DETAIL CARD ── */
+  .anomaly-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--error);
+    border-radius: 8px;
+    padding: 14px 16px;
+    margin-bottom: 10px;
+    font-size: 12px;
+  }
+
+  .anomaly-card-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+    font-family: var(--mono);
+    font-weight: 600;
+    font-size: 12px;
+  }
+
+  .anomaly-card-body { color: var(--muted); line-height: 1.6; }
+
+  .anomaly-card.warn { border-left-color: var(--warn); }
+
+  /* ── EMPTY STATE ── */
+  .empty-state {
+    text-align: center;
+    padding: 60px 20px;
+    color: var(--muted);
+  }
+
+  .empty-icon { font-size: 40px; margin-bottom: 12px; }
+  .empty-title { font-size: 15px; font-weight: 600; color: var(--text); margin-bottom: 6px; }
+  .empty-sub { font-size: 12px; line-height: 1.6; }
+
+  /* ── TOOLTIP ── */
+  [data-tip] { position: relative; cursor: help; }
+  [data-tip]:hover::after {
+    content: attr(data-tip);
+    position: absolute;
+    bottom: calc(100% + 6px);
+    left: 50%;
+    transform: translateX(-50%);
+    background: #1e2533;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 5px 10px;
+    font-size: 11px;
+    color: var(--text);
+    white-space: nowrap;
+    z-index: 999;
+    pointer-events: none;
+    font-family: var(--sans);
+  }
+
+  /* ── HIDDEN ── */
+  .hidden { display: none !important; }
+
+  /* ── LOADING ── */
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .spinner { width: 16px; height: 16px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; }
+
+  /* ── PULSE ANIMATION ── */
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.5} }
+  .pulsing { animation: pulse 1.5s ease infinite; }
+
+  /* ── RESPONSIVE ── */
+  @media (max-width: 900px) {
+    .app { grid-template-columns: 1fr; }
+    aside { display: none; }
+    .stats-row { grid-template-columns: repeat(2,1fr); }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">
+    <div class="logo-icon">🔍</div>
+    LINCOLN AUDIT
+  </div>
+  <div class="header-right">
+    <span class="badge" id="statusBadge">SIN DATOS</span>
+    <button class="btn btn-ghost" onclick="resetApp()">↺ Reiniciar</button>
+    <button class="btn btn-primary" onclick="exportAudit()">⬇ Exportar auditoría</button>
+  </div>
+</header>
+
+<div class="app">
+  <!-- SIDEBAR -->
+  <aside>
+    <div class="nav-group-label">Carga</div>
+    <div class="nav-item active" id="nav-upload" onclick="showView('upload')">
+      <span class="nav-icon">📂</span> Cargar archivo
+    </div>
+
+    <div class="nav-group-label">Auditorías</div>
+    <div class="nav-item" id="nav-flete-usa" onclick="showView('flete-usa')">
+      <span class="nav-icon">🚛</span> Flete USA
+      <span class="nav-count error hidden" id="cnt-flete-usa">0</span>
+    </div>
+    <div class="nav-item" id="nav-flete-mex" onclick="showView('flete-mex')">
+      <span class="nav-icon">🇲🇽</span> Flete México
+      <span class="nav-count error hidden" id="cnt-flete-mex">0</span>
+    </div>
+    <div class="nav-item" id="nav-cruce" onclick="showView('cruce')">
+      <span class="nav-icon">🌉</span> Cruce
+      <span class="nav-count error hidden" id="cnt-cruce">0</span>
+    </div>
+    <div class="nav-item" id="nav-extra-stop" onclick="showView('extra-stop')">
+      <span class="nav-icon">📍</span> Extra Stop
+      <span class="nav-count error hidden" id="cnt-extra-stop">0</span>
+    </div>
+    <div class="nav-item" id="nav-tnu" onclick="showView('tnu')">
+      <span class="nav-icon">🚫</span> Truck Not Used
+      <span class="nav-count error hidden" id="cnt-tnu">0</span>
+    </div>
+    <div class="nav-item" id="nav-handling" onclick="showView('handling')">
+      <span class="nav-icon">📦</span> Handling
+      <span class="nav-count error hidden" id="cnt-handling">0</span>
+    </div>
+
+    <div class="nav-group-label">Resumen</div>
+    <div class="nav-item" id="nav-anomalies" onclick="showView('anomalies')">
+      <span class="nav-icon">⚠️</span> Anomalías
+      <span class="nav-count error hidden" id="cnt-all">0</span>
+    </div>
+    <div class="nav-item" id="nav-cancelled" onclick="showView('cancelled')">
+      <span class="nav-icon">🚫</span> Cancelados
+    </div>
+
+    <div class="nav-group-label">Reglas</div>
+    <div class="nav-item" id="nav-rules" onclick="showView('rules')">
+      <span class="nav-icon">📋</span> Reglas auditoria
+    </div>
+  </aside>
+
+  <!-- MAIN -->
+  <main id="main">
+
+    <!-- ── UPLOAD VIEW ── -->
+    <div id="view-upload">
+      <div style="padding:28px;">
+        <div class="upload-zone" id="dropZone"
+          ondragover="event.preventDefault();this.classList.add('drag')"
+          ondragleave="this.classList.remove('drag')"
+          ondrop="handleDrop(event)">
+          <div class="upload-icon">📊</div>
+          <div class="upload-title">Carga tu archivo de auditoría Lincoln</div>
+          <div class="upload-sub">Arrastra el archivo <strong>Automatización_lincoln.xlsx</strong> aquí, o haz clic para seleccionarlo</div>
+          <button class="btn btn-primary" onclick="document.getElementById('fileInput').click()">
+            Seleccionar archivo XLSX
+          </button>
+          <input type="file" id="fileInput" accept=".xlsx,.xls" class="hidden" onchange="loadFile(this.files[0])">
+        </div>
+
+        <div id="loadingBlock" class="hidden" style="text-align:center;padding:40px;">
+          <div class="spinner" style="margin:0 auto 14px;width:28px;height:28px;border-width:3px;"></div>
+          <div style="color:var(--muted);font-size:13px;" id="loadingMsg">Procesando archivo...</div>
+        </div>
+      </div>
+
+      <!-- HOW IT WORKS -->
+      <div style="padding:0 28px 28px;">
+        <div class="section-title"><span>¿Cómo funciona?</span></div>
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:4px;">
+          <div class="stat-card">
+            <div style="font-size:22px;margin-bottom:8px;">📥</div>
+            <div style="font-weight:600;margin-bottom:4px;">1. Carga el Excel</div>
+            <div style="color:var(--muted);font-size:12px;line-height:1.6;">Sube el archivo de Automatización Lincoln directamente. No necesitas prepararlo previamente.</div>
+          </div>
+          <div class="stat-card">
+            <div style="font-size:22px;margin-bottom:8px;">🔍</div>
+            <div style="font-weight:600;margin-bottom:4px;">2. Auditoría automática</div>
+            <div style="color:var(--muted);font-size:12px;line-height:1.6;">El sistema aplica las 3 reglas de servicio y detecta anomalías en Flete USA, MX, Cruce, Extra Stop, TNU y Handling.</div>
+          </div>
+          <div class="stat-card">
+            <div style="font-size:22px;margin-bottom:8px;">📋</div>
+            <div style="font-weight:600;margin-bottom:4px;">3. Revisa y exporta</div>
+            <div style="color:var(--muted);font-size:12px;line-height:1.6;">Filtra los viajes con anomalías, revisa las observaciones y exporta el reporte de auditoría.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── FLETE USA VIEW ── -->
+    <div id="view-flete-usa" class="hidden">
+      <div class="tabs">
+        <div class="tab active" onclick="filterFleteUSA('all',this)">Todos</div>
+        <div class="tab" onclick="filterFleteUSA('ok',this)">✅ Sin anomalía</div>
+        <div class="tab" onclick="filterFleteUSA('error',this)">❌ Con anomalía</div>
+        <div class="tab" onclick="filterFleteUSA('regla1',this)">Regla 1</div>
+        <div class="tab" onclick="filterFleteUSA('regla2',this)">Regla 2</div>
+        <div class="tab" onclick="filterFleteUSA('regla3',this)">Regla 3</div>
+      </div>
+      <div class="filter-row">
+        <input type="text" placeholder="🔎 Buscar número de viaje..." oninput="searchTable('tbl-flete-usa', this.value)" />
+        <select onchange="filterByTracto('tbl-flete-usa', this.value)" id="tractoFilter">
+          <option value="">Todos los tractos</option>
+        </select>
+      </div>
+      <div class="section">
+        <div class="table-wrap">
+          <table id="tbl-flete-usa">
+            <thead>
+              <tr>
+                <th>Número Viaje</th>
+                <th>Tracto</th>
+                <th>Tipo Viaje</th>
+                <th>Servicio</th>
+                <th>Regla</th>
+                <th class="amt">I Flete USA</th>
+                <th class="amt">I Fuel</th>
+                <th class="amt">C Flete USA</th>
+                <th class="amt">Diferencia</th>
+                <th>Estado</th>
+                <th>Observación</th>
+              </tr>
+            </thead>
+            <tbody id="tbody-flete-usa"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── FLETE MEX VIEW ── -->
+    <div id="view-flete-mex" class="hidden">
+      <div class="tabs">
+        <div class="tab active" onclick="filterGeneric('tbl-flete-mex','all',this)">Todos</div>
+        <div class="tab" onclick="filterGeneric('tbl-flete-mex','ok',this)">✅ Sin anomalía</div>
+        <div class="tab" onclick="filterGeneric('tbl-flete-mex','error',this)">❌ Con anomalía</div>
+      </div>
+      <div class="filter-row">
+        <input type="text" placeholder="🔎 Buscar número de viaje..." oninput="searchTable('tbl-flete-mex', this.value)" />
+      </div>
+      <div class="section">
+        <div class="table-wrap">
+          <table id="tbl-flete-mex">
+            <thead>
+              <tr>
+                <th>Número Viaje</th>
+                <th>Tracto</th>
+                <th>Tipo Viaje</th>
+                <th>Regla</th>
+                <th class="amt">I Flete MX</th>
+                <th class="amt">C Flete MX</th>
+                <th class="amt">Diferencia</th>
+                <th>Estado</th>
+                <th>Observación</th>
+              </tr>
+            </thead>
+            <tbody id="tbody-flete-mex"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── CRUCE VIEW ── -->
+    <div id="view-cruce" class="hidden">
+      <div class="tabs">
+        <div class="tab active" onclick="filterGeneric('tbl-cruce','all',this)">Todos</div>
+        <div class="tab" onclick="filterGeneric('tbl-cruce','ok',this)">✅ Sin anomalía</div>
+        <div class="tab" onclick="filterGeneric('tbl-cruce','error',this)">❌ Con anomalía</div>
+      </div>
+      <div class="filter-row">
+        <input type="text" placeholder="🔎 Buscar número de viaje..." oninput="searchTable('tbl-cruce', this.value)" />
+      </div>
+      <div class="section">
+        <div class="table-wrap">
+          <table id="tbl-cruce">
+            <thead>
+              <tr>
+                <th>Número Viaje</th>
+                <th>Tracto</th>
+                <th>Tipo Viaje</th>
+                <th>Regla</th>
+                <th class="amt">I Cruce Cargado</th>
+                <th class="amt">I Cruce Vacío</th>
+                <th class="amt">C Cruce</th>
+                <th class="amt">Diferencia</th>
+                <th>Estado</th>
+                <th>Observación</th>
+              </tr>
+            </thead>
+            <tbody id="tbody-cruce"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── EXTRA STOP VIEW ── -->
+    <div id="view-extra-stop" class="hidden">
+      <div class="tabs">
+        <div class="tab active" onclick="filterGeneric('tbl-extra-stop','all',this)">Todos</div>
+        <div class="tab" onclick="filterGeneric('tbl-extra-stop','ok',this)">✅ Sin anomalía</div>
+        <div class="tab" onclick="filterGeneric('tbl-extra-stop','error',this)">❌ Con anomalía</div>
+      </div>
+      <div class="filter-row">
+        <input type="text" placeholder="🔎 Buscar..." oninput="searchTable('tbl-extra-stop', this.value)" />
+      </div>
+      <div class="section">
+        <div class="table-wrap">
+          <table id="tbl-extra-stop">
+            <thead>
+              <tr>
+                <th>Número Viaje</th>
+                <th>Tracto</th>
+                <th>Tipo Viaje</th>
+                <th>Regla</th>
+                <th class="amt">I Extra Stop</th>
+                <th class="amt">C Extra Stop</th>
+                <th class="amt">Diferencia</th>
+                <th>Estado</th>
+                <th>Observación</th>
+              </tr>
+            </thead>
+            <tbody id="tbody-extra-stop"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── TNU VIEW ── -->
+    <div id="view-tnu" class="hidden">
+      <div class="tabs">
+        <div class="tab active" onclick="filterGeneric('tbl-tnu','all',this)">Todos</div>
+        <div class="tab" onclick="filterGeneric('tbl-tnu','ok',this)">✅ Sin anomalía</div>
+        <div class="tab" onclick="filterGeneric('tbl-tnu','error',this)">❌ Con anomalía</div>
+      </div>
+      <div class="filter-row">
+        <input type="text" placeholder="🔎 Buscar..." oninput="searchTable('tbl-tnu', this.value)" />
+      </div>
+      <div class="section">
+        <div class="table-wrap">
+          <table id="tbl-tnu">
+            <thead>
+              <tr>
+                <th>Número Viaje</th>
+                <th>Tracto</th>
+                <th>Tipo Viaje</th>
+                <th>Regla</th>
+                <th class="amt">I TNU</th>
+                <th class="amt">C TNU</th>
+                <th class="amt">Diferencia</th>
+                <th>Estado</th>
+                <th>Observación</th>
+              </tr>
+            </thead>
+            <tbody id="tbody-tnu"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── HANDLING VIEW ── -->
+    <div id="view-handling" class="hidden">
+      <div class="tabs">
+        <div class="tab active" onclick="filterGeneric('tbl-handling','all',this)">Todos</div>
+        <div class="tab" onclick="filterGeneric('tbl-handling','ok',this)">✅ Sin anomalía</div>
+        <div class="tab" onclick="filterGeneric('tbl-handling','error',this)">❌ Con anomalía</div>
+      </div>
+      <div class="filter-row">
+        <input type="text" placeholder="🔎 Buscar..." oninput="searchTable('tbl-handling', this.value)" />
+      </div>
+      <div class="section">
+        <div class="table-wrap">
+          <table id="tbl-handling">
+            <thead>
+              <tr>
+                <th>Número Viaje</th>
+                <th>Tracto</th>
+                <th>Tipo Viaje</th>
+                <th>Regla</th>
+                <th class="amt">I Handling</th>
+                <th class="amt">C Handling</th>
+                <th class="amt">Diferencia</th>
+                <th>Estado</th>
+                <th>Observación</th>
+              </tr>
+            </thead>
+            <tbody id="tbody-handling"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── ANOMALIES VIEW ── -->
+    <div id="view-anomalies" class="hidden">
+      <div style="padding:20px 28px 0;">
+        <div class="section-title"><span>⚠️ Reporte de anomalías detectadas</span></div>
+      </div>
+      <div class="stats-row">
+        <div class="stat-card">
+          <div class="stat-label">Total viajes</div>
+          <div class="stat-value" id="s-total">—</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Sin anomalía</div>
+          <div class="stat-value ok" id="s-ok">—</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Con anomalía</div>
+          <div class="stat-value err" id="s-err">—</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Cancelados</div>
+          <div class="stat-value warn" id="s-canc">—</div>
+        </div>
+      </div>
+      <div class="section">
+        <div id="anomalies-list"></div>
+      </div>
+    </div>
+
+    <!-- ── CANCELLED VIEW ── -->
+    <div id="view-cancelled" class="hidden">
+      <div style="padding:20px 28px 0;">
+        <div class="section-title"><span>🚫 Viajes cancelados</span></div>
+      </div>
+      <div class="section">
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Número Viaje</th>
+                <th>Estado</th>
+                <th class="amt">Importe Ingreso</th>
+                <th class="amt">Importe Costo</th>
+                <th>Cliente</th>
+              </tr>
+            </thead>
+            <tbody id="tbody-cancelled"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── RULES VIEW ── -->
+    <div id="view-rules" class="hidden">
+      <div style="padding:28px;">
+        <div class="section-title"><span>📋 Reglas de auditoría</span></div>
+        <div style="display:grid;gap:14px;margin-top:4px;">
+          <div class="stat-card" style="border-left:3px solid var(--accent);">
+            <div style="font-family:var(--mono);font-size:12px;color:var(--accent);font-weight:600;margin-bottom:10px;">REGLA 1 — Carretera USA + Unidad capturada</div>
+            <ul style="color:var(--muted);font-size:12px;line-height:2;padding-left:18px;">
+              <li>El ingreso de Flete USA va en columna <code>I FREIGHT USATRANSP USA2</code></li>
+              <li>El ingreso de Fuel va en <code>I FUEL CHARGES DIESEL3</code></li>
+              <li><strong style="color:var(--text)">No debe haber costo asociado</strong> (la unidad es propia)</li>
+              <li>Si hay costo → Anomalía</li>
+            </ul>
+          </div>
+          <div class="stat-card" style="border-left:3px solid var(--accent2);">
+            <div style="font-family:var(--mono);font-size:12px;color:var(--accent2);font-weight:600;margin-bottom:10px;">REGLA 2 — Broker USA + Unidad capturada</div>
+            <ul style="color:var(--muted);font-size:12px;line-height:2;padding-left:18px;">
+              <li>Ingreso Flete USA → <code>I FREIGHT USATRANSP USA20</code></li>
+              <li>Ingreso Fuel → <code>I FUEL CHARGES DIESEL21</code></li>
+              <li>No debe haber costo en columnas de flete USA</li>
+              <li>La parte mexicana siempre la hace un tercero (debe haber costo)</li>
+            </ul>
+          </div>
+          <div class="stat-card" style="border-left:3px solid var(--warn);">
+            <div style="font-family:var(--mono);font-size:12px;color:var(--warn);font-weight:600;margin-bottom:10px;">REGLA 3 — Broker USA + Sin unidad</div>
+            <ul style="color:var(--muted);font-size:12px;line-height:2;padding-left:18px;">
+              <li>Ingreso Flete USA → <code>I FREIGHT USATRANSP USA39</code></li>
+              <li>Ingreso Fuel → <code>I FUEL CHARGES DIESEL40</code></li>
+              <li><strong style="color:var(--text)">Debe haber costo</strong> en <code>C FREIGHT USACT TRANSP USA77</code></li>
+              <li>Variación permitida: ±$200 (flete USA), ±$200 (flete MX), ±$200 (cruce), ±$50 (extras)</li>
+            </ul>
+          </div>
+          <div class="stat-card">
+            <div style="font-family:var(--mono);font-size:12px;color:var(--ok);font-weight:600;margin-bottom:10px;">UMBRALES DE ANOMALÍA</div>
+            <table style="width:100%;font-size:12px;">
+              <thead><tr style="color:var(--muted);"><th style="text-align:left;padding:4px 0;font-weight:500;">Concepto</th><th style="text-align:right;padding:4px 0;font-weight:500;">Variación máxima</th></tr></thead>
+              <tbody>
+                <tr><td style="padding:4px 0;color:var(--muted)">Flete USA / Fuel</td><td style="text-align:right;color:var(--text);">$200</td></tr>
+                <tr><td style="padding:4px 0;color:var(--muted)">Flete México</td><td style="text-align:right;color:var(--text);">$200</td></tr>
+                <tr><td style="padding:4px 0;color:var(--muted)">Cruce (mercado: $100–$200)</td><td style="text-align:right;color:var(--text);">$200</td></tr>
+                <tr><td style="padding:4px 0;color:var(--muted)">Extra Stop</td><td style="text-align:right;color:var(--text);">$50</td></tr>
+                <tr><td style="padding:4px 0;color:var(--muted)">TNU (Truck Not Used)</td><td style="text-align:right;color:var(--text);">$50</td></tr>
+                <tr><td style="padding:4px 0;color:var(--muted)">Handling</td><td style="text-align:right;color:var(--text);">$50</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<!-- SheetJS -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+
+<script>
+// ─── STATE ───────────────────────────────────────────────────
+let DATA = [];          // raw rows from Companies sheet
+let AUDIT = {           // processed audit results
+  fleteUSA: [],
+  fleteMex: [],
+  cruce: [],
+  extraStop: [],
+  tnu: [],
+  handling: [],
+  cancelled: [],
+};
+let allAnomalies = [];
+
+// ─── NAVIGATION ──────────────────────────────────────────────
+function showView(name) {
+  document.querySelectorAll('[id^="view-"]').forEach(v => v.classList.add('hidden'));
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  document.getElementById('view-' + name).classList.remove('hidden');
+  document.getElementById('nav-' + name)?.classList.add('active');
+}
+
+// ─── FILE LOADING ─────────────────────────────────────────────
+function handleDrop(e) {
+  e.preventDefault();
+  document.getElementById('dropZone').classList.remove('drag');
+  const file = e.dataTransfer.files[0];
+  if (file) loadFile(file);
+}
+
+function loadFile(file) {
+  if (!file) return;
+  document.getElementById('dropZone').classList.add('hidden');
+  document.getElementById('loadingBlock').classList.remove('hidden');
+  setMsg('Leyendo archivo Excel...');
+
+  const reader = new FileReader();
+  reader.onload = e => {
+    try {
+      setMsg('Parseando hojas...');
+      const wb = XLSX.read(e.target.result, { type: 'binary', cellDates: true });
+      const sheet = wb.Sheets['Companies'];
+      if (!sheet) throw new Error('No se encontró la hoja "Companies"');
+      const rows = XLSX.utils.sheet_to_json(sheet, { defval: 0 });
+      DATA = rows;
+      setMsg('Aplicando reglas de auditoría...');
+      setTimeout(() => {
+        runAudit();
+        renderAll();
+        document.getElementById('loadingBlock').classList.add('hidden');
+        document.getElementById('statusBadge').textContent = `${DATA.length} VIAJES`;
+        document.getElementById('statusBadge').style.background = 'rgba(16,185,129,.15)';
+        document.getElementById('statusBadge').style.color = 'var(--ok)';
+        document.getElementById('statusBadge').style.borderColor = 'rgba(16,185,129,.3)';
+        showView('anomalies');
+      }, 100);
+    } catch(err) {
+      alert('Error procesando el archivo: ' + err.message);
+      document.getElementById('loadingBlock').classList.add('hidden');
+      document.getElementById('dropZone').classList.remove('hidden');
+    }
+  };
+  reader.readAsBinaryString(file);
+}
+
+function setMsg(m) { document.getElementById('loadingMsg').textContent = m; }
+
+// ─── HELPERS ─────────────────────────────────────────────────
+function n(v) { return parseFloat(v) || 0; }
+function fmt(v) { return '$' + Math.abs(v).toLocaleString('en-US', {minimumFractionDigits:2,maximumFractionDigits:2}); }
+function fmtCell(v) {
+  if (v === 0) return `<td class="amt amt-zero">—</td>`;
+  const cls = v > 0 ? 'amt-pos' : 'amt-neg';
+  return `<td class="amt ${cls}">${v < 0 ? '-' : ''}${fmt(v)}</td>`;
+}
+
+function getRegla(row) {
+  const serv = (row['Servicio'] || '').toString().trim().toUpperCase();
+  const unidad = (row['Número Tracto'] || '').toString().trim();
+  if (serv.includes('CARRETERA') && unidad) return 1;
+  if (serv.includes('BROKER') && unidad) return 2;
+  if (serv.includes('BROKER') && !unidad) return 3;
+  return 0;
+}
+
+function chipStatus(ok) {
+  if (ok) return `<span class="chip chip-ok"><span class="dot"></span>OK</span>`;
+  return `<span class="chip chip-err"><span class="dot"></span>Anomalía</span>`;
+}
+
+function ruleChip(r) {
+  const colors = ['','var(--accent)','var(--accent2)','var(--warn)'];
+  const labels = ['—','R1 Carretera','R2 Broker+Unidad','R3 Broker-Sin unidad'];
+  return `<span style="font-size:10px;padding:2px 7px;border-radius:4px;background:rgba(255,255,255,.07);color:${colors[r]};font-family:var(--mono);">${labels[r]}</span>`;
+}
+
+// ─── RUN AUDIT ───────────────────────────────────────────────
+function runAudit() {
+  AUDIT = { fleteUSA:[], fleteMex:[], cruce:[], extraStop:[], tnu:[], handling:[], cancelled:[] };
+  allAnomalies = [];
+
+  for (const row of DATA) {
+    const viaje = row['Número De Viaje'] || '';
+    const tracto = (row['Número Tracto'] || '').toString().trim();
+    const tipoViaje = row['Tipo Viaje'] || '';
+    const regla = getRegla(row);
+    const estatus = (row['Estatus'] || '').toUpperCase();
+    const isCancelled = estatus.includes('CANCEL');
+
+    if (isCancelled) {
+      AUDIT.cancelled.push(row);
+    }
+
+    // ── FLETE USA ──
+    auditFleteUSA(row, viaje, tracto, tipoViaje, regla);
+
+    // ── FLETE MEX ──
+    auditFleteMex(row, viaje, tracto, tipoViaje, regla);
+
+    // ── CRUCE ──
+    auditCruce(row, viaje, tracto, tipoViaje, regla);
+
+    // ── EXTRA STOP ──
+    auditExtraStop(row, viaje, tracto, tipoViaje, regla);
+
+    // ── TNU ──
+    auditTNU(row, viaje, tracto, tipoViaje, regla);
+
+    // ── HANDLING ──
+    auditHandling(row, viaje, tracto, tipoViaje, regla);
+  }
+}
+
+function auditFleteUSA(row, viaje, tracto, tipoViaje, regla) {
+  let iIngreso = 0, iFuel = 0, costo = 0;
+  let obs = '';
+  let ok = true;
+
+  if (regla === 1) {
+    iIngreso = n(row['I FREIGHT USATRANSP USA2']);
+    iFuel = n(row['I FUEL CHARGES DIESEL3']);
+    // no debe haber costo
+    costo = n(row['C FREIGHT USACT TRANSP USA72']) + n(row['C FREIGHT USACT TRANSP USA77']) + n(row['C FREIGHT USACT TRANSP USA78']);
+    if (costo > 0) { ok=false; obs='Regla 1: No debe haber costo en flete USA para unidad propia.'; }
+  } else if (regla === 2) {
+    iIngreso = n(row['I FREIGHT USATRANSP USA20']);
+    iFuel = n(row['I FUEL CHARGES DIESEL21']);
+    costo = n(row['C FREIGHT USACT TRANSP USA72']) + n(row['C FREIGHT USACT TRANSP USA77']) + n(row['C FREIGHT USACT TRANSP USA78']);
+    if (costo > 0) { ok=false; obs='Regla 2: No debe haber costo en flete USA cuando hay unidad capturada.'; }
+  } else if (regla === 3) {
+    iIngreso = n(row['I FREIGHT USATRANSP USA39']);
+    iFuel = n(row['I FUEL CHARGES DIESEL40']);
+    costo = n(row['C FREIGHT USACT TRANSP USA77']);
+    const totalIngreso = iIngreso + iFuel;
+    if (totalIngreso > 0 && costo === 0) { ok=false; obs='Regla 3: Hay ingreso de flete USA pero no hay costo (tercero).'; }
+    else if (totalIngreso === 0 && costo > 0) { ok=false; obs='Regla 3: Hay costo de flete USA pero no hay ingreso.'; }
+    else if (totalIngreso > 0 && costo > 0) {
+      const diff = Math.abs(totalIngreso - costo);
+      if (diff > 200) { ok=false; obs=`Regla 3: Variación de ${fmt(diff)} excede $200 (I:${fmt(totalIngreso)} C:${fmt(costo)}).`; }
+    }
+  }
+
+  const diff = (iIngreso + iFuel) - costo;
+  const hasData = (iIngreso + iFuel + costo) > 0;
+  if (!hasData) return;
+
+  const entry = { viaje, tracto, tipoViaje, regla, iIngreso, iFuel, costo, diff, ok, obs };
+  AUDIT.fleteUSA.push(entry);
+  if (!ok) addAnomaly('Flete USA', viaje, obs);
+}
+
+function auditFleteMex(row, viaje, tracto, tipoViaje, regla) {
+  let iIngreso = 0, costo = 0;
+  let ok = true, obs = '';
+
+  if (regla === 1) {
+    iIngreso = n(row['I FREIGHT MEXTRANSP MEX1']);
+    costo = 0; // no aplica normalmente
+  } else if (regla === 2) {
+    iIngreso = n(row['I FREIGHT MEXTRANSP MEX19']);
+    costo = n(row['C FREIGHT MEXCT TRANSP MEX76']) || n(row['AC FREIGHT MEXCT TRANSP MEX76']);
+  } else if (regla === 3) {
+    iIngreso = n(row['I FREIGHT MEXTRANSP MEX38']) || n(row['I FREIGHT MEXTRANSP MEX61']);
+    costo = n(row['C FREIGHT MEXCT TRANSP MEX76']) || n(row['C FREIGHT MEXCT TRANSP MEX84']);
+  }
+
+  if (iIngreso === 0 && costo === 0) return;
+
+  const diff = iIngreso - costo;
+  if (iIngreso > 0 && costo === 0) { ok=false; obs='Hay ingreso de flete MX pero no hay costo (siempre lo hace un tercero).'; }
+  else if (iIngreso === 0 && costo > 0) { ok=false; obs='Hay costo de flete MX pero no hay ingreso correspondiente.'; }
+  else if (Math.abs(diff) > 200) { ok=false; obs=`Variación de ${fmt(Math.abs(diff))} excede $200 (I:${fmt(iIngreso)} C:${fmt(costo)}).`; }
+
+  const entry = { viaje, tracto, tipoViaje, regla, iIngreso, costo, diff, ok, obs };
+  AUDIT.fleteMex.push(entry);
+  if (!ok) addAnomaly('Flete MX', viaje, obs);
+}
+
+function auditCruce(row, viaje, tracto, tipoViaje, regla) {
+  let iCargado=0, iVacio=0, costo=0, ok=true, obs='';
+
+  if (regla === 1) {
+    iVacio = n(row['I CROSS BORDER EMPTYCRUCE VACIO6']);
+    iCargado = n(row['I CROSS BORDER LOADEDCRUCE CARGADO7']);
+  } else if (regla === 2) {
+    iVacio = n(row['I CROSS BORDER EMPTYCRUCE VACIO24']);
+    iCargado = n(row['I CROSS BORDER LOADEDCRUCE CARGADO25']);
+  } else if (regla === 3) {
+    iVacio = n(row['I CROSS BORDER EMPTYCRUCE VACIO43']);
+    iCargado = n(row['I CROSS BORDER LOADEDCRUCE CARGADO44']);
+    costo = n(row['C CROSS BORDER LOADEDCT CRUCE CARGADO73']);
+  }
+
+  const iTotal = iCargado + iVacio;
+  if (iTotal === 0 && costo === 0) return;
+
+  const diff = iTotal - costo;
+  if (regla === 3) {
+    if (iTotal > 0 && costo === 0) { ok=false; obs='Cruce: hay ingreso pero no hay costo (tercero).'; }
+    else if (iTotal === 0 && costo > 0) { ok=false; obs='Cruce: hay costo pero no hay ingreso.'; }
+    else if (iTotal > 0 && costo > 0 && Math.abs(diff) > 200) {
+      ok=false; obs=`Cruce: variación ${fmt(Math.abs(diff))} excede $200 (I:${fmt(iTotal)} C:${fmt(costo)}).`;
+    }
+    // Check extreme values
+    if (costo > 400) { ok=false; obs += ` Costo de cruce (${fmt(costo)}) fuera del rango de mercado ($100–$200).`; }
+  }
+
+  const entry = { viaje, tracto, tipoViaje, regla, iCargado, iVacio, costo, diff, ok, obs };
+  AUDIT.cruce.push(entry);
+  if (!ok) addAnomaly('Cruce', viaje, obs);
+}
+
+function auditExtraStop(row, viaje, tracto, tipoViaje, regla) {
+  let iIngreso=0, costo=0, ok=true, obs='';
+
+  if (regla === 1) {
+    iIngreso = n(row['I EXTRA STOPPARADA EXTRA5']);
+  } else if (regla === 2) {
+    iIngreso = n(row['I EXTRA STOPPARADA EXTRA23']);
+    costo = n(row['C EXTRA STOPCT PARADA EXTRA70']);
+  } else if (regla === 3) {
+    iIngreso = n(row['I EXTRA STOPPARADA EXTRA42']);
+    costo = n(row['C EXTRA STOPCT PARADA EXTRA75']);
+  }
+
+  if (iIngreso === 0 && costo === 0) return;
+
+  const diff = iIngreso - costo;
+  if (costo > 0 && iIngreso === 0) { ok=false; obs='Extra Stop: hay costo sin ingreso.'; }
+  else if (iIngreso > 0 && costo === 0 && regla === 3) { ok=false; obs='Extra Stop: hay ingreso de tercero pero no hay costo.'; }
+  else if (iIngreso > 300) { ok=false; obs=`Extra Stop: ingreso ${fmt(iIngreso)} parece elevado (>$300).`; }
+  else if (Math.abs(diff) > 50) { ok=false; obs=`Extra Stop: variación ${fmt(Math.abs(diff))} excede $50 (I:${fmt(iIngreso)} C:${fmt(costo)}).`; }
+
+  const entry = { viaje, tracto, tipoViaje, regla, iIngreso, costo, diff, ok, obs };
+  AUDIT.extraStop.push(entry);
+  if (!ok) addAnomaly('Extra Stop', viaje, obs);
+}
+
+function auditTNU(row, viaje, tracto, tipoViaje, regla) {
+  let iIngreso=0, costo=0, ok=true, obs='';
+
+  if (regla === 1) {
+    iIngreso = n(row['I TNU - TRUCK NOT USEDMOVIMIENTO EN FALSO14']);
+  } else if (regla === 2) {
+    iIngreso = n(row['I TNU - TRUCK NOT USEDMOVIMIENTO EN FALSO32']);
+  } else if (regla === 3) {
+    iIngreso = n(row['I TNU - TRUCK NOT USEDMOVIMIENTO EN FALSO51']);
+    costo = n(row['C TNU - TRUCK NOT USEDCT MOVIMIENTO EN FALSO90']);
+  }
+
+  if (iIngreso === 0 && costo === 0) return;
+
+  const diff = iIngreso - costo;
+  if (costo > 0 && iIngreso === 0) { ok=false; obs='TNU: hay costo sin ingreso.'; }
+  else if (regla === 3 && iIngreso > 0 && costo === 0) { ok=false; obs='TNU: hay ingreso de tercero pero no hay costo.'; }
+  else if (Math.abs(diff) > 50) { ok=false; obs=`TNU: variación ${fmt(Math.abs(diff))} excede $50 (I:${fmt(iIngreso)} C:${fmt(costo)}).`; }
+
+  const entry = { viaje, tracto, tipoViaje, regla, iIngreso, costo, diff, ok, obs };
+  AUDIT.tnu.push(entry);
+  if (!ok) addAnomaly('TNU', viaje, obs);
+}
+
+function auditHandling(row, viaje, tracto, tipoViaje, regla) {
+  let iIngreso=0, costo=0, ok=true, obs='';
+
+  if (regla === 1) {
+    iIngreso = n(row['I HANDLING CHARGESMANIOBRAS13']);
+  } else if (regla === 2) {
+    iIngreso = n(row['I HANDLING CHARGESMANIOBRAS31']);
+  } else if (regla === 3) {
+    iIngreso = n(row['I HANDLING CHARGESMANIOBRAS50']);
+    costo = n(row['C HANDLING CHARGESCT MANIOBRAS89']);
+  }
+
+  if (iIngreso === 0 && costo === 0) return;
+
+  const diff = iIngreso - costo;
+  if (costo > 0 && iIngreso === 0) { ok=false; obs='Handling: hay costo sin ingreso.'; }
+  else if (regla === 3 && iIngreso > 0 && costo === 0) { ok=false; obs='Handling: hay ingreso de tercero pero no hay costo.'; }
+  else if (iIngreso > 1500) { ok=false; obs=`Handling: ingreso ${fmt(iIngreso)} parece elevado (>$1,500).`; }
+  else if (Math.abs(diff) > 50) { ok=false; obs=`Handling: variación ${fmt(Math.abs(diff))} excede $50 (I:${fmt(iIngreso)} C:${fmt(costo)}).`; }
+
+  const entry = { viaje, tracto, tipoViaje, regla, iIngreso, costo, diff, ok, obs };
+  AUDIT.handling.push(entry);
+  if (!ok) addAnomaly('Handling', viaje, obs);
+}
+
+function addAnomaly(tipo, viaje, obs) {
+  allAnomalies.push({ tipo, viaje, obs });
+}
+
+// ─── RENDER ALL ───────────────────────────────────────────────
+function renderAll() {
+  renderFleteUSA();
+  renderFleteMex();
+  renderCruce();
+  renderExtraStop();
+  renderTNU();
+  renderHandling();
+  renderCancelled();
+  renderAnomalies();
+  updateCounts();
+}
+
+function updateCounts() {
+  const counts = {
+    'flete-usa': AUDIT.fleteUSA.filter(r=>!r.ok).length,
+    'flete-mex': AUDIT.fleteMex.filter(r=>!r.ok).length,
+    'cruce': AUDIT.cruce.filter(r=>!r.ok).length,
+    'extra-stop': AUDIT.extraStop.filter(r=>!r.ok).length,
+    'tnu': AUDIT.tnu.filter(r=>!r.ok).length,
+    'handling': AUDIT.handling.filter(r=>!r.ok).length,
+    'all': allAnomalies.length,
+  };
+  for (const [k,v] of Object.entries(counts)) {
+    const el = document.getElementById('cnt-'+k);
+    if (!el) continue;
+    el.textContent = v;
+    if (v > 0) el.classList.remove('hidden'); else el.classList.add('hidden');
+  }
+  // Summary stats
+  document.getElementById('s-total').textContent = DATA.length;
+  const viajesConAnomalia = new Set(allAnomalies.map(a=>a.viaje)).size;
+  document.getElementById('s-err').textContent = viajesConAnomalia;
+  document.getElementById('s-ok').textContent = DATA.length - viajesConAnomalia - AUDIT.cancelled.length;
+  document.getElementById('s-canc').textContent = AUDIT.cancelled.length;
+}
+
+function renderFleteUSA() {
+  const tbody = document.getElementById('tbody-flete-usa');
+  if (!AUDIT.fleteUSA.length) { tbody.innerHTML = emptyRow(11,'No hay datos de Flete USA'); return; }
+  tbody.innerHTML = AUDIT.fleteUSA.map(r => `
+    <tr class="${r.ok?'':'anomaly'}" data-status="${r.ok?'ok':'error'}" data-regla="regla${r.regla}" data-viaje="${r.viaje}" data-tracto="${r.tracto}">
+      <td style="font-weight:600;">${r.viaje}</td>
+      <td>${r.tracto||'—'}</td>
+      <td>${r.tipoViaje||'—'}</td>
+      <td style="color:var(--muted);font-size:11px;">${getServicio(r.viaje)}</td>
+      <td>${ruleChip(r.regla)}</td>
+      ${fmtCell(r.iIngreso)}
+      ${fmtCell(r.iFuel)}
+      ${fmtCell(r.costo)}
+      ${fmtCell(r.diff)}
+      <td>${chipStatus(r.ok)}</td>
+      <td style="color:var(--muted);max-width:250px;white-space:normal;font-size:11px;">${r.obs||''}</td>
+    </tr>`).join('');
+
+  // Populate tracto filter
+  const tractos = [...new Set(AUDIT.fleteUSA.map(r=>r.tracto).filter(Boolean))].sort();
+  const sel = document.getElementById('tractoFilter');
+  sel.innerHTML = '<option value="">Todos los tractos</option>' + tractos.map(t=>`<option>${t}</option>`).join('');
+}
+
+function getServicio(viaje) {
+  const row = DATA.find(r=>r['Número De Viaje']===viaje);
+  return row ? (row['Servicio']||'—') : '—';
+}
+
+function renderFleteMex() {
+  const tbody = document.getElementById('tbody-flete-mex');
+  if (!AUDIT.fleteMex.length) { tbody.innerHTML = emptyRow(9,'No hay datos de Flete México'); return; }
+  tbody.innerHTML = AUDIT.fleteMex.map(r => `
+    <tr class="${r.ok?'':'anomaly'}" data-status="${r.ok?'ok':'error'}" data-viaje="${r.viaje}">
+      <td style="font-weight:600;">${r.viaje}</td>
+      <td>${r.tracto||'—'}</td>
+      <td>${r.tipoViaje||'—'}</td>
+      <td>${ruleChip(r.regla)}</td>
+      ${fmtCell(r.iIngreso)}
+      ${fmtCell(r.costo)}
+      ${fmtCell(r.diff)}
+      <td>${chipStatus(r.ok)}</td>
+      <td style="color:var(--muted);max-width:250px;white-space:normal;font-size:11px;">${r.obs||''}</td>
+    </tr>`).join('');
+}
+
+function renderCruce() {
+  const tbody = document.getElementById('tbody-cruce');
+  if (!AUDIT.cruce.length) { tbody.innerHTML = emptyRow(10,'No hay datos de Cruce'); return; }
+  tbody.innerHTML = AUDIT.cruce.map(r => `
+    <tr class="${r.ok?'':'anomaly'}" data-status="${r.ok?'ok':'error'}" data-viaje="${r.viaje}">
+      <td style="font-weight:600;">${r.viaje}</td>
+      <td>${r.tracto||'—'}</td>
+      <td>${r.tipoViaje||'—'}</td>
+      <td>${ruleChip(r.regla)}</td>
+      ${fmtCell(r.iCargado)}
+      ${fmtCell(r.iVacio)}
+      ${fmtCell(r.costo)}
+      ${fmtCell(r.diff)}
+      <td>${chipStatus(r.ok)}</td>
+      <td style="color:var(--muted);max-width:250px;white-space:normal;font-size:11px;">${r.obs||''}</td>
+    </tr>`).join('');
+}
+
+function renderExtraStop() {
+  renderSimpleTable('extra-stop', AUDIT.extraStop, 9);
+}
+
+function renderTNU() {
+  renderSimpleTable('tnu', AUDIT.tnu, 9);
+}
+
+function renderHandling() {
+  renderSimpleTable('handling', AUDIT.handling, 9);
+}
+
+function renderSimpleTable(key, data, cols) {
+  const tbody = document.getElementById('tbody-'+key);
+  if (!data.length) { tbody.innerHTML = emptyRow(cols,'Sin datos'); return; }
+  tbody.innerHTML = data.map(r => `
+    <tr class="${r.ok?'':'anomaly'}" data-status="${r.ok?'ok':'error'}" data-viaje="${r.viaje}">
+      <td style="font-weight:600;">${r.viaje}</td>
+      <td>${r.tracto||'—'}</td>
+      <td>${r.tipoViaje||'—'}</td>
+      <td>${ruleChip(r.regla)}</td>
+      ${fmtCell(r.iIngreso)}
+      ${fmtCell(r.costo)}
+      ${fmtCell(r.diff)}
+      <td>${chipStatus(r.ok)}</td>
+      <td style="color:var(--muted);max-width:250px;white-space:normal;font-size:11px;">${r.obs||''}</td>
+    </tr>`).join('');
+}
+
+function renderCancelled() {
+  const tbody = document.getElementById('tbody-cancelled');
+  if (!AUDIT.cancelled.length) { tbody.innerHTML = emptyRow(5,'No hay cancelados'); return; }
+  tbody.innerHTML = AUDIT.cancelled.map(r => `
+    <tr>
+      <td style="font-weight:600;">${r['Número De Viaje']||'—'}</td>
+      <td><span class="chip chip-err"><span class="dot"></span>Cancelado</span></td>
+      ${fmtCell(n(r['Importe Ingreso']))}
+      ${fmtCell(n(r['Importe Costo']))}
+      <td style="color:var(--muted);">${r['Cliente']||'—'}</td>
+    </tr>`).join('');
+}
+
+function renderAnomalies() {
+  const el = document.getElementById('anomalies-list');
+  if (!allAnomalies.length) {
+    el.innerHTML = `<div class="empty-state"><div class="empty-icon">✅</div><div class="empty-title">Sin anomalías detectadas</div><div class="empty-sub">Todos los viajes cumplen con las reglas de auditoría.</div></div>`;
+    return;
+  }
+
+  const grouped = {};
+  for (const a of allAnomalies) {
+    if (!grouped[a.viaje]) grouped[a.viaje] = [];
+    grouped[a.viaje].push(a);
+  }
+
+  el.innerHTML = Object.entries(grouped).map(([viaje, items]) => {
+    const row = DATA.find(r=>r['Número De Viaje']===viaje);
+    const sub = row ? `${row['Servicio']||''} | ${row['Tipo Viaje']||''} | ${row['Número Tracto']||'Sin tracto'}` : '';
+    const obs = items.map(i=>`<div style="margin-bottom:4px;">• <strong style="color:var(--text)">[${i.tipo}]</strong> ${i.obs}</div>`).join('');
+    return `
+      <div class="anomaly-card">
+        <div class="anomaly-card-header">
+          ⚠️ ${viaje}
+          <span style="font-size:10px;color:var(--muted);font-weight:400;">${sub}</span>
+        </div>
+        <div class="anomaly-card-body">${obs}</div>
+      </div>`;
+  }).join('');
+}
+
+function emptyRow(cols, msg) {
+  return `<tr><td colspan="${cols}" style="text-align:center;padding:30px;color:var(--muted);">${msg}</td></tr>`;
+}
+
+// ─── FILTERS ─────────────────────────────────────────────────
+function filterFleteUSA(type, btn) {
+  setActiveTab(btn);
+  const rows = document.querySelectorAll('#tbl-flete-usa tbody tr');
+  rows.forEach(r => {
+    if (type === 'all') r.style.display = '';
+    else if (type === 'ok') r.style.display = r.dataset.status === 'ok' ? '' : 'none';
+    else if (type === 'error') r.style.display = r.dataset.status === 'error' ? '' : 'none';
+    else r.style.display = r.dataset.regla === type ? '' : 'none';
+  });
+}
+
+function filterGeneric(tblId, type, btn) {
+  setActiveTab(btn);
+  const rows = document.querySelectorAll('#'+tblId+' tbody tr');
+  rows.forEach(r => {
+    if (type === 'all') r.style.display = '';
+    else if (type === 'ok') r.style.display = r.dataset.status === 'ok' ? '' : 'none';
+    else r.style.display = r.dataset.status === 'error' ? '' : 'none';
+  });
+}
+
+function setActiveTab(btn) {
+  btn.closest('.tabs').querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+  btn.classList.add('active');
+}
+
+function searchTable(tblId, q) {
+  q = q.toLowerCase();
+  document.querySelectorAll('#'+tblId+' tbody tr').forEach(r => {
+    r.style.display = r.dataset.viaje?.toLowerCase().includes(q) ? '' : 'none';
+  });
+}
+
+function filterByTracto(tblId, tracto) {
+  document.querySelectorAll('#'+tblId+' tbody tr').forEach(r => {
+    r.style.display = (!tracto || r.dataset.tracto === tracto) ? '' : 'none';
+  });
+}
+
+// ─── EXPORT ──────────────────────────────────────────────────
+function exportAudit() {
+  if (!allAnomalies.length && !DATA.length) { alert('Carga un archivo primero.'); return; }
+
+  const wb = XLSX.utils.book_new();
+
+  // Sheet: Anomalias
+  const anomData = [['Número Viaje','Tipo Auditoría','Observación']];
+  for (const a of allAnomalies) anomData.push([a.viaje, a.tipo, a.obs]);
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(anomData), 'Anomalías');
+
+  // Sheet: Flete USA
+  const fuData = [['Viaje','Tracto','Tipo Viaje','Regla','I Flete USA','I Fuel','C Flete USA','Diferencia','Estado','Observación']];
+  for (const r of AUDIT.fleteUSA) fuData.push([r.viaje,r.tracto,r.tipoViaje,'R'+r.regla,r.iIngreso,r.iFuel,r.costo,r.diff,r.ok?'OK':'Anomalía',r.obs]);
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(fuData), 'Flete USA');
+
+  // Sheet: Flete MX
+  const fmData = [['Viaje','Tracto','Tipo Viaje','Regla','I Flete MX','C Flete MX','Diferencia','Estado','Observación']];
+  for (const r of AUDIT.fleteMex) fmData.push([r.viaje,r.tracto,r.tipoViaje,'R'+r.regla,r.iIngreso,r.costo,r.diff,r.ok?'OK':'Anomalía',r.obs]);
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(fmData), 'Flete MX');
+
+  XLSX.writeFile(wb, 'Auditoria_Lincoln_' + new Date().toISOString().slice(0,10) + '.xlsx');
+}
+
+// ─── RESET ───────────────────────────────────────────────────
+function resetApp() {
+  DATA = [];
+  AUDIT = { fleteUSA:[], fleteMex:[], cruce:[], extraStop:[], tnu:[], handling:[], cancelled:[] };
+  allAnomalies = [];
+  document.getElementById('fileInput').value = '';
+  document.getElementById('dropZone').classList.remove('hidden');
+  document.getElementById('loadingBlock').classList.add('hidden');
+  document.getElementById('statusBadge').textContent = 'SIN DATOS';
+  document.getElementById('statusBadge').style = '';
+  showView('upload');
+}
+</script>
+</body>
+</html>
