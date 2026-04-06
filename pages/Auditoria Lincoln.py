@@ -1,3 +1,4 @@
+
 from __future__ import annotations
 
 import io
@@ -11,9 +12,6 @@ import streamlit as st
 st.set_page_config(page_title="Lincoln Auditoría", layout="wide")
 
 
-# -----------------------------
-# Helpers
-# -----------------------------
 def n(value) -> float:
     try:
         if pd.isna(value):
@@ -42,11 +40,8 @@ def get_text(row: pd.Series, col: str) -> str:
 
 
 def normalize_df(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    for c in df.columns:
-        if isinstance(c, str):
-            df.rename(columns={c: c.strip()}, inplace=True)
-    return df
+    cols = {c: c.strip() if isinstance(c, str) else c for c in df.columns}
+    return df.rename(columns=cols).copy()
 
 
 def get_regla(row: pd.Series) -> int:
@@ -68,8 +63,7 @@ def route_of(row: pd.Series) -> str:
         get_text(row, "Ciudad Destino"),
         get_text(row, "Estado Destino"),
     ]
-    parts = [p for p in parts if p]
-    return " | ".join(parts)
+    return " | ".join([p for p in parts if p])
 
 
 @dataclass
@@ -87,7 +81,7 @@ class AuditRow:
 
     def as_dict(self) -> Dict[str, object]:
         return {
-            "Auditoria": self.auditoria,
+            "Auditoría": self.auditoria,
             "Número Viaje": self.viaje,
             "Tracto": self.tracto,
             "Tipo Viaje": self.tipo_viaje,
@@ -100,9 +94,6 @@ class AuditRow:
         }
 
 
-# -----------------------------
-# Auditorías
-# -----------------------------
 def audit_flete_usa(row: pd.Series) -> AuditRow | None:
     regla = get_regla(row)
     viaje = get_text(row, "Número De Viaje")
@@ -125,7 +116,7 @@ def audit_flete_usa(row: pd.Series) -> AuditRow | None:
         )
         if costo > 0:
             estado = "Anomalía"
-            obs = "Regla 1: unidad propia con costo de flete USA."
+            obs = "Regla 1: No debe haber costo en flete USA para unidad propia."
     elif regla == 2:
         i_flete = get_col(row, "I FREIGHT USATRANSP USA20")
         i_fuel = get_col(row, "I FUEL CHARGES DIESEL21")
@@ -136,7 +127,7 @@ def audit_flete_usa(row: pd.Series) -> AuditRow | None:
         )
         if costo > 0:
             estado = "Anomalía"
-            obs = "Regla 2: broker USA con tracto no debería traer costo USA en esas columnas."
+            obs = "Regla 2: No debe haber costo en flete USA cuando hay unidad capturada."
     elif regla == 3:
         i_flete = get_col(row, "I FREIGHT USATRANSP USA39")
         i_fuel = get_col(row, "I FUEL CHARGES DIESEL40")
@@ -144,13 +135,13 @@ def audit_flete_usa(row: pd.Series) -> AuditRow | None:
         total_ing = i_flete + i_fuel
         if total_ing > 0 and costo == 0:
             estado = "Anomalía"
-            obs = "Regla 3: hay ingreso de flete USA pero no costo."
+            obs = "Regla 3: Hay ingreso de flete USA pero no hay costo (tercero)."
         elif total_ing == 0 and costo > 0:
             estado = "Anomalía"
-            obs = "Regla 3: hay costo de flete USA pero no ingreso."
-        elif total_ing > 0 and abs(total_ing - costo) > 200:
+            obs = "Regla 3: Hay costo de flete USA pero no hay ingreso."
+        elif total_ing > 0 and costo > 0 and abs(total_ing - costo) > 200:
             estado = "Anomalía"
-            obs = f"Regla 3: diferencia {money(abs(total_ing - costo))} mayor a $200."
+            obs = f"Regla 3: Variación de {money(abs(total_ing - costo))} excede $200."
     else:
         return None
 
@@ -158,21 +149,8 @@ def audit_flete_usa(row: pd.Series) -> AuditRow | None:
         return None
 
     return AuditRow(
-        auditoria="Flete USA",
-        viaje=viaje,
-        tracto=tracto,
-        tipo_viaje=tipo_viaje,
-        servicio=servicio,
-        regla=regla,
-        estado=estado,
-        observacion=obs,
-        ruta=ruta,
-        metricas={
-            "I Flete USA": i_flete,
-            "I Fuel": i_fuel,
-            "C Flete USA": costo,
-            "Diferencia": (i_flete + i_fuel) - costo,
-        },
+        "Flete USA", viaje, tracto, tipo_viaje, servicio, regla, estado, obs, ruta,
+        {"I Flete USA": i_flete, "I Fuel": i_fuel, "C Flete USA": costo, "Diferencia": (i_flete + i_fuel) - costo}
     )
 
 
@@ -194,8 +172,8 @@ def audit_flete_mex(row: pd.Series) -> AuditRow | None:
         ingreso = get_col(row, "I FREIGHT MEXTRANSP MEX19")
         costo = get_col(row, "C FREIGHT MEXCT TRANSP MEX76")
     elif regla == 3:
-        ingreso = get_col(row, "I FREIGHT MEXTRANSP MEX38") + get_col(row, "I FREIGHT MEXTRANSP MEX61")
-        costo = get_col(row, "C FREIGHT MEXCT TRANSP MEX76") + get_col(row, "C FREIGHT MEXCT TRANSP MEX84")
+        ingreso = get_col(row, "I FREIGHT MEXTRANSP MEX38") or get_col(row, "I FREIGHT MEXTRANSP MEX61")
+        costo = get_col(row, "C FREIGHT MEXCT TRANSP MEX76") or get_col(row, "C FREIGHT MEXCT TRANSP MEX84")
     else:
         return None
 
@@ -203,31 +181,19 @@ def audit_flete_mex(row: pd.Series) -> AuditRow | None:
         return None
 
     diff = ingreso - costo
-    if ingreso > 0 and costo == 0 and regla in (2, 3):
+    if ingreso > 0 and costo == 0:
         estado = "Anomalía"
-        obs = "Flete MX con ingreso pero sin costo de tercero."
+        obs = "Hay ingreso de flete MX pero no hay costo (siempre lo hace un tercero)."
     elif ingreso == 0 and costo > 0:
         estado = "Anomalía"
-        obs = "Flete MX con costo pero sin ingreso."
+        obs = "Hay costo de flete MX pero no hay ingreso correspondiente."
     elif abs(diff) > 200:
         estado = "Anomalía"
-        obs = f"Flete MX con diferencia {money(abs(diff))} mayor a $200."
+        obs = f"Variación de {money(abs(diff))} excede $200."
 
     return AuditRow(
-        auditoria="Flete MX",
-        viaje=viaje,
-        tracto=tracto,
-        tipo_viaje=tipo_viaje,
-        servicio=servicio,
-        regla=regla,
-        estado=estado,
-        observacion=obs,
-        ruta=ruta,
-        metricas={
-            "I Flete MX": ingreso,
-            "C Flete MX": costo,
-            "Diferencia": diff,
-        },
+        "Flete MX", viaje, tracto, tipo_viaje, servicio, regla, estado, obs, ruta,
+        {"I Flete MX": ingreso, "C Flete MX": costo, "Diferencia": diff}
     )
 
 
@@ -264,34 +230,20 @@ def audit_cruce(row: pd.Series) -> AuditRow | None:
     if regla == 3:
         if ingreso > 0 and costo == 0:
             estado = "Anomalía"
-            obs = "Cruce con ingreso pero sin costo."
+            obs = "Cruce: hay ingreso pero no hay costo (tercero)."
         elif ingreso == 0 and costo > 0:
             estado = "Anomalía"
-            obs = "Cruce con costo pero sin ingreso."
-        elif abs(diff) > 200:
+            obs = "Cruce: hay costo pero no hay ingreso."
+        elif ingreso > 0 and costo > 0 and abs(diff) > 200:
             estado = "Anomalía"
-            obs = f"Cruce con diferencia {money(abs(diff))} mayor a $200."
+            obs = f"Cruce: variación {money(abs(diff))} excede $200."
         if costo > 400:
             estado = "Anomalía"
-            extra = " Costo de cruce fuera del rango esperado."
-            obs = (obs + extra).strip()
+            obs = (obs + " Costo de cruce fuera del rango de mercado ($100–$200).").strip()
 
     return AuditRow(
-        auditoria="Cruce",
-        viaje=viaje,
-        tracto=tracto,
-        tipo_viaje=tipo_viaje,
-        servicio=servicio,
-        regla=regla,
-        estado=estado,
-        observacion=obs,
-        ruta=ruta,
-        metricas={
-            "I Cruce Cargado": i_carg,
-            "I Cruce Vacío": i_vac,
-            "C Cruce": costo,
-            "Diferencia": diff,
-        },
+        "Cruce", viaje, tracto, tipo_viaje, servicio, regla, estado, obs, ruta,
+        {"I Cruce Cargado": i_carg, "I Cruce Vacío": i_vac, "C Cruce": costo, "Diferencia": diff}
     )
 
 
@@ -339,37 +291,23 @@ def audit_small_concept(row: pd.Series, concepto: str) -> AuditRow | None:
     diff = ingreso - costo
     estado = "OK"
     obs = ""
-    tol = cfg["tol"]
-    max_ing = cfg["max_ing"]
 
     if costo > 0 and ingreso == 0:
         estado = "Anomalía"
-        obs = f"{concepto} con costo sin ingreso."
-    elif regla == 3 and ingreso > 0 and costo == 0:
+        obs = f"{concepto}: hay costo sin ingreso."
+    elif ingreso > 0 and costo == 0 and regla == 3:
         estado = "Anomalía"
-        obs = f"{concepto} con ingreso de tercero pero sin costo."
-    elif max_ing is not None and ingreso > max_ing:
+        obs = f"{concepto}: hay ingreso de tercero pero no hay costo."
+    elif cfg["max_ing"] is not None and ingreso > cfg["max_ing"]:
         estado = "Anomalía"
-        obs = f"{concepto} con ingreso alto {money(ingreso)}."
-    elif abs(diff) > tol:
+        obs = f"{concepto}: ingreso {money(ingreso)} parece elevado."
+    elif abs(diff) > cfg["tol"]:
         estado = "Anomalía"
-        obs = f"{concepto} con diferencia {money(abs(diff))} mayor a ${tol}."
+        obs = f"{concepto}: variación {money(abs(diff))} excede ${cfg['tol']}."
 
     return AuditRow(
-        auditoria=concepto,
-        viaje=viaje,
-        tracto=tracto,
-        tipo_viaje=tipo_viaje,
-        servicio=servicio,
-        regla=regla,
-        estado=estado,
-        observacion=obs,
-        ruta=ruta,
-        metricas={
-            f"I {concepto}": ingreso,
-            f"C {concepto}": costo,
-            "Diferencia": diff,
-        },
+        concepto, viaje, tracto, tipo_viaje, servicio, regla, estado, obs, ruta,
+        {f"I {concepto}": ingreso, f"C {concepto}": costo, "Diferencia": diff}
     )
 
 
@@ -378,6 +316,9 @@ def audit_utilidad(df: pd.DataFrame) -> pd.DataFrame:
     out = df[cols].copy()
     if "% Utilidad" in out.columns:
         out["% Utilidad Num"] = out["% Utilidad"].apply(n)
+        # Si viene como decimal (0.35), convertirlo a porcentaje (35)
+        if out["% Utilidad Num"].dropna().between(0, 1).mean() > 0.8:
+            out["% Utilidad Num"] = out["% Utilidad Num"] * 100
     else:
         ing = out["Importe Ingreso"].apply(n) if "Importe Ingreso" in out.columns else 0
         uti = out["Importe Utilidad"].apply(n) if "Importe Utilidad" in out.columns else 0
@@ -404,34 +345,33 @@ def run_all_audits(df: pd.DataFrame) -> Dict[str, pd.DataFrame]:
             (audit_flete_mex, "Flete MX"),
             (audit_cruce, "Cruce"),
         ]:
-            r = fn(row)
-            if r:
-                results[key].append(r.as_dict())
+            result = fn(row)
+            if result:
+                results[key].append(result.as_dict())
 
         for concepto in ["Extra Stop", "TNU", "Handling"]:
-            r = audit_small_concept(row, concepto)
-            if r:
-                results[concepto].append(r.as_dict())
+            result = audit_small_concept(row, concepto)
+            if result:
+                results[concepto].append(result.as_dict())
 
     out = {k: pd.DataFrame(v) for k, v in results.items()}
     out["Utilidad"] = audit_utilidad(df)
 
     if "Estatus" in df.columns:
-        cancel = df[df["Estatus"].astype(str).str.upper().str.contains("CANCEL", na=False)].copy()
-        out["Cancelados"] = cancel
+        out["Cancelados"] = df[df["Estatus"].astype(str).str.upper().str.contains("CANCEL", na=False)].copy()
     else:
         out["Cancelados"] = pd.DataFrame()
 
-    anomalies = []
-    for name, audit_df in out.items():
-        if name == "Cancelados":
-            continue
-        if "Estado" in audit_df.columns:
+    # Igual que el HTML: el resumen principal NO mete Utilidad dentro de anomalías globales
+    anomaly_blocks = []
+    for name in ["Flete USA", "Flete MX", "Cruce", "Extra Stop", "TNU", "Handling"]:
+        audit_df = out[name]
+        if not audit_df.empty and "Estado" in audit_df.columns:
             temp = audit_df[audit_df["Estado"] == "Anomalía"].copy()
             if not temp.empty:
                 temp.insert(0, "Auditoría", name)
-                anomalies.append(temp)
-    out["Anomalías"] = pd.concat(anomalies, ignore_index=True) if anomalies else pd.DataFrame()
+                anomaly_blocks.append(temp)
+    out["Anomalías"] = pd.concat(anomaly_blocks, ignore_index=True) if anomaly_blocks else pd.DataFrame()
     return out
 
 
@@ -439,28 +379,13 @@ def to_excel_bytes(results: Dict[str, pd.DataFrame]) -> bytes:
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
         for name, df in results.items():
-            export_df = df.copy()
-            export_df.to_excel(writer, sheet_name=name[:31], index=False)
+            df.to_excel(writer, sheet_name=name[:31], index=False)
     buffer.seek(0)
     return buffer.getvalue()
 
 
-# -----------------------------
-# UI
-# -----------------------------
 st.title("Lincoln — Auditoría de viajes")
-st.caption("Versión en Python/Streamlit convertida desde tu HTML para que la pruebes dentro de tu app.")
-
-with st.expander("Reglas base incluidas", expanded=False):
-    st.markdown(
-        """
-- **Regla 1:** Carretera USA + unidad capturada.
-- **Regla 2:** Broker USA + unidad capturada.
-- **Regla 3:** Broker USA + sin unidad.
-- Tolerancias base: **$200** para Flete USA, Flete MX y Cruce; **$50** para Extra Stop, TNU y Handling.
-- Auditoría adicional: **utilidad menor a 30%**.
-        """
-    )
+st.caption("Versión en Python/Streamlit alineada al HTML y ajustada para no inflar anomalías globales.")
 
 uploaded = st.file_uploader("Sube el Excel de sistema", type=["xlsx", "xls"])
 
@@ -468,14 +393,14 @@ if uploaded:
     try:
         xls = pd.ExcelFile(uploaded)
         sheet_name = "Companies" if "Companies" in xls.sheet_names else xls.sheet_names[0]
-        df = pd.read_excel(uploaded, sheet_name=sheet_name)
+        df = pd.read_excel(xls, sheet_name=sheet_name)
         df = normalize_df(df)
         results = run_all_audits(df)
 
         anom = results["Anomalías"]
         total_viajes = len(df)
         cancelados = len(results["Cancelados"])
-        viajes_con_anom = anom["Número De Viaje"].nunique() if not anom.empty and "Número De Viaje" in anom.columns else 0
+        viajes_con_anom = anom["Número Viaje"].nunique() if not anom.empty and "Número Viaje" in anom.columns else 0
         viajes_ok = max(total_viajes - viajes_con_anom - cancelados, 0)
 
         c1, c2, c3, c4 = st.columns(4)
@@ -511,11 +436,9 @@ if uploaded:
         st.download_button(
             "Descargar resultado de auditoría",
             data=to_excel_bytes(results),
-            file_name="Auditoria_Lincoln_Streamlit.xlsx",
+            file_name="Auditoria_Lincoln_Streamlit_Ajustada.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
     except Exception as e:
         st.error(f"No pude procesar el archivo: {e}")
-else:
-    st.info("Sube el archivo Excel para comenzar.")
