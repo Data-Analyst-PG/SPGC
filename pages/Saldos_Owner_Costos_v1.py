@@ -6,7 +6,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-st.set_page_config(page_title="Saldos Owner - Costos v2", layout="wide")
+st.set_page_config(page_title="Saldos Owner - Costos v3", layout="wide")
 
 # ============================================================
 # Helpers generales
@@ -361,17 +361,107 @@ def prep_vouchers(vouchers_raw: pd.DataFrame, ndigits: int, concept_map: dict[st
     return out
 
 
-def dedupe_costos(cheques: pd.DataFrame, vouchers: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    costos = pd.concat([cheques, vouchers], ignore_index=True, sort=False)
-    costos["ROW_ID_COSTO"] = range(1, len(costos) + 1)
-    dup_keys = ["VALE_KEY", "UNIDAD_KEY", "CONCEPTO_KEY", "OBS_KEY", "POLIZA_KEY", "IMPORTE_KEY"]
-    costos["DUP_COUNT"] = costos.groupby(dup_keys, dropna=False)["ROW_ID_COSTO"].transform("size")
-    costos["DUP_SEQ"] = costos.groupby(dup_keys, dropna=False).cumcount() + 1
-    duplicados = costos[costos["DUP_COUNT"] > 1].copy()
-    # Si hay duplicado entre CHEQUES y VOUCHERS, conserva el primero por llave.
-    depurados = costos.sort_values(["DUP_SEQ", "SOURCE"]).drop_duplicates(dup_keys, keep="first").copy()
-    return depurados, duplicados
+def make_cheque_voucher_duplicate_pairs(cheques: pd.DataFrame, vouchers: pd.DataFrame) -> pd.DataFrame:
+    blocks = [
+        ["VALE_KEY", "UNIDAD_KEY"],
+        ["POLIZA_KEY", "IMPORTE_KEY"],
+        ["VALE_KEY", "IMPORTE_KEY"],
+        ["UNIDAD_KEY", "CONCEPTO_KEY", "IMPORTE_KEY"],
+        ["OBS_KEY", "IMPORTE_KEY"],
+    ]
+    pieces = []
+    for block_cols in blocks:
+        l = cheques[["ROW_ID_COSTO"] + block_cols].copy()
+        r = vouchers[["ROW_ID_COSTO"] + block_cols].copy()
+        for c in block_cols:
+            l = l[l[c].notna() & (l[c].astype(str) != "")]
+            r = r[r[c].notna() & (r[c].astype(str) != "")]
+        if l.empty or r.empty:
+            continue
+        p = l.merge(r, on=block_cols, how="inner", suffixes=("_CHEQUE", "_VOUCHER"))
+        pieces.append(p[["ROW_ID_COSTO_CHEQUE", "ROW_ID_COSTO_VOUCHER"]])
+    if not pieces:
+        return pd.DataFrame(columns=["ROW_ID_COSTO_CHEQUE", "ROW_ID_COSTO_VOUCHER"])
+    return pd.concat(pieces, ignore_index=True).drop_duplicates()
 
+
+def score_duplicate_pairs(cheques: pd.DataFrame, vouchers: pd.DataFrame, pairs: pd.DataFrame) -> pd.DataFrame:
+    if pairs.empty:
+        return pairs
+    key_cols = ["ROW_ID_COSTO", "VALE_KEY", "UNIDAD_KEY", "CONCEPTO_KEY", "OBS_KEY", "POLIZA_KEY", "IMPORTE_KEY"]
+    x = pairs.merge(cheques[key_cols], left_on="ROW_ID_COSTO_CHEQUE", right_on="ROW_ID_COSTO", how="left").drop(columns=["ROW_ID_COSTO"])
+    x = x.merge(vouchers[key_cols], left_on="ROW_ID_COSTO_VOUCHER", right_on="ROW_ID_COSTO", how="left", suffixes=("_CHEQUE", "_VOUCHER")).drop(columns=["ROW_ID_COSTO"])
+    x["DUP_COINCIDE_VALE"] = x["VALE_KEY_CHEQUE"] == x["VALE_KEY_VOUCHER"]
+    x["DUP_COINCIDE_UNIDAD"] = x["UNIDAD_KEY_CHEQUE"] == x["UNIDAD_KEY_VOUCHER"]
+    x["DUP_COINCIDE_CONCEPTO"] = x["CONCEPTO_KEY_CHEQUE"] == x["CONCEPTO_KEY_VOUCHER"]
+    x["DUP_COINCIDE_OBS"] = x["OBS_KEY_CHEQUE"] == x["OBS_KEY_VOUCHER"]
+    x["DUP_COINCIDE_POLIZA"] = x["POLIZA_KEY_CHEQUE"] == x["POLIZA_KEY_VOUCHER"]
+    x["DUP_COINCIDE_IMPORTE"] = x["IMPORTE_KEY_CHEQUE"] == x["IMPORTE_KEY_VOUCHER"]
+    score_cols = ["DUP_COINCIDE_VALE", "DUP_COINCIDE_UNIDAD", "DUP_COINCIDE_CONCEPTO", "DUP_COINCIDE_OBS", "DUP_COINCIDE_POLIZA", "DUP_COINCIDE_IMPORTE"]
+    x["DUP_TOTAL_COINCIDENCIAS"] = x[score_cols].sum(axis=1).astype(int)
+    x["DUP_ESTATUS"] = x["DUP_TOTAL_COINCIDENCIAS"].map(lambda n: "DUPLICADO_OK" if n == 6 else ("DUPLICADO_CON_DISCREPANCIA" if n >= 4 else "CANDIDATO_DEBIL"))
+    return x
+
+
+def dedupe_costos(cheques: pd.DataFrame, vouchers: pd.DataFrame, prefer_source: str = "VOUCHERS") -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    cheques = cheques.copy()
+    vouchers = vouchers.copy()
+    cheques["ROW_ID_COSTO"] = range(1, len(cheques) + 1)
+    vouchers["ROW_ID_COSTO"] = range(len(cheques) + 1, len(cheques) + len(vouchers) + 1)
+    costos = pd.concat([cheques, vouchers], ignore_index=True, sort=False)
+
+    pairs = make_cheque_voucher_duplicate_pairs(cheques, vouchers)
+    scored = score_duplicate_pairs(cheques, vouchers, pairs)
+    scored_valid = scored[scored["DUP_TOTAL_COINCIDENCIAS"] >= 4].copy() if not scored.empty else scored
+
+    if scored_valid.empty:
+        costos["DUP_ESTATUS_FINAL"] = "NO_DUPLICADO"
+        costos["DUP_TOTAL_COINCIDENCIAS_FINAL"] = 0
+        costos["DUP_ACCION"] = "CONSERVADO"
+        return costos.copy(), costos.iloc[0:0].copy(), scored
+
+    scored_valid = scored_valid.sort_values(["DUP_TOTAL_COINCIDENCIAS", "ROW_ID_COSTO_CHEQUE", "ROW_ID_COSTO_VOUCHER"], ascending=[False, True, True])
+    used_cheques = set()
+    used_vouchers = set()
+    best_rows = []
+    for _, row in scored_valid.iterrows():
+        ch = row["ROW_ID_COSTO_CHEQUE"]
+        vo = row["ROW_ID_COSTO_VOUCHER"]
+        if ch in used_cheques or vo in used_vouchers:
+            continue
+        used_cheques.add(ch)
+        used_vouchers.add(vo)
+        best_rows.append(row)
+    best_dup = pd.DataFrame(best_rows) if best_rows else scored_valid.iloc[0:0].copy()
+
+    prefer_source = (prefer_source or "VOUCHERS").upper()
+    remove_ids = set()
+    dup_pairs = []
+    for _, row in best_dup.iterrows():
+        ch = row["ROW_ID_COSTO_CHEQUE"]
+        vo = row["ROW_ID_COSTO_VOUCHER"]
+        keep_id = vo if prefer_source == "VOUCHERS" else ch
+        drop_id = ch if prefer_source == "VOUCHERS" else vo
+        remove_ids.add(drop_id)
+        info = row.to_dict()
+        info.update({"ROW_ID_COSTO_CONSERVADO": keep_id, "ROW_ID_COSTO_EXCLUIDO": drop_id, "FUENTE_CONSERVADA": prefer_source})
+        dup_pairs.append(info)
+    resumen_dup = pd.DataFrame(dup_pairs)
+
+    costos["DUP_ESTATUS_FINAL"] = "NO_DUPLICADO"
+    costos["DUP_TOTAL_COINCIDENCIAS_FINAL"] = 0
+    costos["DUP_ACCION"] = "CONSERVADO"
+    if not resumen_dup.empty:
+        for _, row in resumen_dup.iterrows():
+            for rid in [row["ROW_ID_COSTO_CHEQUE"], row["ROW_ID_COSTO_VOUCHER"]]:
+                mask = costos["ROW_ID_COSTO"] == rid
+                costos.loc[mask, "DUP_ESTATUS_FINAL"] = row["DUP_ESTATUS"]
+                costos.loc[mask, "DUP_TOTAL_COINCIDENCIAS_FINAL"] = int(row["DUP_TOTAL_COINCIDENCIAS"])
+            costos.loc[costos["ROW_ID_COSTO"].isin(remove_ids), "DUP_ACCION"] = "EXCLUIDO_POR_DUPLICADO"
+
+    depurados = costos[costos["DUP_ACCION"] == "CONSERVADO"].copy()
+    duplicados_detalle = costos[costos["DUP_ESTATUS_FINAL"] != "NO_DUPLICADO"].copy()
+    return depurados, duplicados_detalle, scored
 
 def match_costos_vs_cont_mayoria(costos: pd.DataFrame, cont_d: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     pairs = make_candidate_pairs(costos, cont_d, "ROW_ID_COSTO", "ROW_ID_CONT", mode="costos")
@@ -395,8 +485,8 @@ def match_costos_vs_cont_mayoria(costos: pd.DataFrame, cont_d: pd.DataFrame) -> 
 # UI
 # ============================================================
 
-st.title("Saldos Owner - Desarrollo de Costos v2")
-st.caption("Version corregida: usa importe de movimiento de Contabilidad y clasifica por mayoria de criterios, no por todo-o-nada.")
+st.title("Saldos Owner - Desarrollo de Costos v3")
+st.caption("Version corregida: Base, Cheques y Vouchers trabajan por mayoria de criterios, con MATCH_OK y MATCH_CON_DISCREPANCIA.")
 
 with st.expander("Como leer esta version", expanded=True):
     st.markdown(
@@ -408,6 +498,10 @@ with st.expander("Como leer esta version", expanded=True):
         - **NO_EXISTE_EN_CONTABILIDAD_D**: no encontro candidato con al menos 3 criterios.
 
         La tabla muestra columnas de diagnostico como `COINCIDE_POLIZA`, `COINCIDE_UNIDAD`, `COINCIDE_VIAJE`, `COINCIDE_CONCEPTO`, `COINCIDE_IMPORTE` y `TOTAL_COINCIDENCIAS` para que no tengas que adivinar que fallo.
+
+        **Cheques/Vouchers vs Contabilidad D** tambien usa mayoria: Vale, unidad, concepto, contrarrecibo/poliza e importe. 5/5 es `MATCH_OK`; 3 o 4 de 5 es `MATCH_CON_DISCREPANCIA`.
+
+        **Duplicados Cheques vs Vouchers** se detectan con 6 criterios: Vale, unidad, concepto, observaciones, contrarrecibo e importe. 6/6 es duplicado exacto; 4 o 5 de 6 es duplicado probable con discrepancia. Puedes elegir si conservar el registro de Vouchers o Cheques.
         """
     )
 
@@ -421,6 +515,7 @@ with st.sidebar:
     st.divider()
     ndigits = st.number_input("Redondeo de importe", min_value=0, max_value=4, value=2, step=1)
     proceso = st.radio("Proceso", ["Base Saldos vs Contabilidad D", "Cheques/Vouchers vs Contabilidad D", "Ambos"], index=0)
+    prefer_dup = st.selectbox("Si Cheque y Voucher son duplicado, conservar", ["VOUCHERS", "CHEQUES"], index=0)
     run = st.button("Procesar costos", type="primary")
 
 if not run:
@@ -492,12 +587,13 @@ if proceso in {"Cheques/Vouchers vs Contabilidad D", "Ambos"}:
             vouchers_raw = read_table(vouchers_file)
             cheques, cheques_company = prep_cheques(cheques_raw, ndigits, concept_map)
             vouchers = prep_vouchers(vouchers_raw, ndigits, concept_map)
-            costos_depurados, costos_duplicados = dedupe_costos(cheques, vouchers)
+            costos_depurados, costos_duplicados, candidatos_duplicados = dedupe_costos(cheques, vouchers, prefer_source=prefer_dup)
             costos_clas, cont_costos_clas, candidatos_costos, mejores_costos = match_costos_vs_cont_mayoria(costos_depurados, cont_d)
             result_sheets.update({
                 "Cheques_excluidos_Company": cheques_company,
                 "Costos_depurados": costos_depurados,
                 "Costos_duplicados": costos_duplicados,
+                "Candidatos_Duplicados": candidatos_duplicados,
                 "Costos_clasificados": costos_clas,
                 "Cont_vs_Costos": cont_costos_clas,
                 "Candidatos_Costos_Cont": candidatos_costos,
@@ -509,18 +605,20 @@ if proceso in {"Cheques/Vouchers vs Contabilidad D", "Ambos"}:
             c3.metric("Duplicados detectados", f"{len(costos_duplicados):,}")
             c4.metric("MATCH_OK", f"{int((costos_clas['ESTATUS_MATCH'] == 'MATCH_OK').sum()):,}")
             c5.metric("MATCH_CON_DISCREPANCIA", f"{int((costos_clas['ESTATUS_MATCH'] == 'MATCH_CON_DISCREPANCIA').sum()):,}")
-            t1, t2, t3, t4, t5, t6 = st.tabs(["Costos clasificados", "Duplicados", "Excluidos Company", "Contabilidad contra Costos", "Candidatos tecnicos", "Mejores matches"])
+            t1, t2, t3, t4, t5, t6, t7 = st.tabs(["Costos clasificados", "Duplicados", "Candidatos duplicados", "Excluidos Company", "Contabilidad contra Costos", "Candidatos tecnicos", "Mejores matches"])
             with t1:
                 show_df(costos_clas)
             with t2:
                 show_df(costos_duplicados)
             with t3:
-                show_df(cheques_company)
+                show_df(candidatos_duplicados)
             with t4:
-                show_df(cont_costos_clas)
+                show_df(cheques_company)
             with t5:
-                show_df(candidatos_costos)
+                show_df(cont_costos_clas)
             with t6:
+                show_df(candidatos_costos)
+            with t7:
                 show_df(mejores_costos)
         except Exception as e:
             st.error(f"No pude procesar Cheques/Vouchers: {e}")
@@ -530,6 +628,6 @@ if len(result_sheets) > 1:
     st.download_button(
         "Descargar resultado costos en Excel",
         data=to_excel_bytes(result_sheets),
-        file_name="resultado_costos_owner_v2.xlsx",
+        file_name="resultado_costos_owner_v3.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
