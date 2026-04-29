@@ -545,7 +545,7 @@ def analizar_DH(cont_completa: pd.DataFrame) -> pd.DataFrame:
         TOTAL_D=('IMPORTE_KEY', lambda s: s[base.loc[s.index, 'TIPO_MOV'] == 'D'].sum()),
         TOTAL_H=('IMPORTE_KEY', lambda s: s[base.loc[s.index, 'TIPO_MOV'] == 'H'].sum()),
         MOVIMIENTOS_D=('IMPORTE_KEY', lambda s: (base.loc[s.index, 'TIPO_MOV'] == 'D').sum()),
-        MOVIMIENTOS_H=('IMPORTE_KEY', lambda s: (base.loc[s.index, 'TIPO_MOV'] == 'H'].sum()),
+        MOVIMIENTOS_H=('IMPORTE_KEY', lambda s: (base.loc[s.index, 'TIPO_MOV'] == 'H').sum()),
     ).reset_index()
     
     resumen['SALDO_D_MENOS_H'] = resumen['TOTAL_D'] - resumen['TOTAL_H']
