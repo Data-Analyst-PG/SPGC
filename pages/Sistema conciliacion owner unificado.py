@@ -1,13 +1,11 @@
 """
 Sistema Unificado de Conciliación de Saldos Owner
-Version: 3.2 - ULTRA-OPTIMIZADA
+Version: 3.3 - CORREGIDA para replicar lógica exacta del script anterior
 
-Mejoras de performance:
-- Indexación con diccionarios para matching O(1)
-- Filtros más agresivos
-- Procesamiento en chunks más pequeños
-- Progreso granular
-- Caché de resultados intermedios
+CAMBIOS CRÍTICOS vs v3.2:
+1. Usa las columnas CORRECTAS: Factura (no ClavePoliza) en Contabilidad
+2. Replica lógica de merge exacto del script anterior
+3. Matching por 5 campos: PR, VIAJE, UNIDAD, TIPO_PAGO, IMPORTE
 """
 
 import re
@@ -17,7 +15,6 @@ from datetime import datetime
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-from collections import defaultdict
 
 import numpy as np
 import pandas as pd
@@ -33,8 +30,6 @@ class ConfigConciliacion:
     ndigits: int = 2
     umbral_match_ok: int = 5
     umbral_match_con_discrepancia: int = 3
-    peso_concepto_exacto: float = 1.0
-    peso_concepto_similar: float = 0.7
 
 
 # ============================================================
@@ -42,49 +37,16 @@ class ConfigConciliacion:
 # ============================================================
 
 class Normalizador:
-    """Clase centralizada para normalización de datos"""
-    
-    TRADUCCIONES = {
-        'DIESEL': 'DIESEL',
-        'FUEL': 'DIESEL',
-        'CONSUMIBLES': 'CONSUMIBLES',
-        'CONSUMABLES': 'CONSUMIBLES',
-        'LOAN': 'PRESTAMO',
-        'PERSONAL LOAN': 'PRESTAMO PERSONAL',
-        'PRESTAMO': 'PRESTAMO',
-        'ADVANCE': 'ANTICIPO',
-        'ANTICIPO': 'ANTICIPO',
-        'REPAIR': 'REPARACION',
-        'REPARACION': 'REPARACION',
-        'PLATES': 'PLACAS',
-        'PLACAS': 'PLACAS',
-        'INSURANCE': 'SEGURO',
-        'SEGURO': 'SEGURO',
-        'TOLL': 'CASETA',
-        'CASETAS': 'CASETA',
-        'MAINTENANCE': 'MANTENIMIENTO',
-        'MANTENIMIENTO': 'MANTENIMIENTO',
-        'TIRES': 'LLANTAS',
-        'LLANTAS': 'LLANTAS',
-    }
+    """Normalización compatible con script anterior"""
     
     @staticmethod
     def texto(x: Any) -> str:
-        """Normaliza texto: mayúsculas, sin acentos, espacios limpios"""
+        """Normaliza texto: mayúsculas, espacios limpios"""
         if x is None or pd.isna(x):
             return ""
         s = str(x).strip().upper()
-        s = unicodedata.normalize("NFKD", s)
-        s = "".join(ch for ch in s if not unicodedata.combining(ch))
         s = re.sub(r"\s+", " ", s)
         return s
-    
-    @staticmethod
-    def clave(x: Any) -> str:
-        """Normaliza para usar como clave: solo alfanuméricos"""
-        s = Normalizador.texto(x)
-        s = re.sub(r"[^A-Z0-9]+", " ", s)
-        return re.sub(r"\s+", " ", s).strip()
     
     @staticmethod
     def monto(x: Any, ndigits: int = 2) -> float:
@@ -93,856 +55,21 @@ class Normalizador:
             if x is None or pd.isna(x):
                 return float("nan")
             if isinstance(x, str):
-                x = x.replace(",", "").replace("$", "").replace("%", "").strip()
+                x = x.replace(",", "").replace("$", "").strip()
             return round(float(x), ndigits)
         except Exception:
             return float("nan")
-    
-    @staticmethod
-    def limpiar_concepto_sufijo(x: Any) -> str:
-        """Quita sufijos tipo ' - 20170908' del concepto"""
-        s = Normalizador.texto(x)
-        s = re.sub(r"\s+-\s+\d{8,}.*$", "", s)
-        s = re.sub(r"\s+-\s+[A-Z0-9]{6,}.*$", "", s)
-        return s.strip()
-    
-    @classmethod
-    def concepto_canonico(cls, x: Any) -> str:
-        """Normaliza conceptos con traducciones"""
-        s = cls.limpiar_concepto_sufijo(x)
-        k = cls.clave(s)
-        
-        palabras = k.split()
-        palabras_traducidas = []
-        
-        for palabra in palabras:
-            if palabra in cls.TRADUCCIONES:
-                palabras_traducidas.append(cls.TRADUCCIONES[palabra])
-            else:
-                palabras_traducidas.append(palabra)
-        
-        resultado = " ".join(palabras_traducidas)
-        
-        reglas = [
-            (r'\bCXP\s+(DIESEL|CONSUMIBLES)\b', 'CXP DIESEL CONSUMIBLES'),
-            (r'\bPERSONAL\s+LOAN\b|\bLOAN\b|\bPRESTAMO\b', 'PRESTAMO'),
-            (r'\bANTICIPO\b|\bADVANCE\b', 'ANTICIPO'),
-            (r'\bDIESEL\b.*\bCONSUMIBLES\b|\bCONSUMIBLES\b.*\bDIESEL\b', 'CXP DIESEL CONSUMIBLES'),
-        ]
-        
-        for patron, valor in reglas:
-            if re.search(patron, resultado):
-                return valor
-        
-        return resultado
-
-
-class ScoringMatcher:
-    """Sistema de scoring para matching inteligente"""
-    
-    def __init__(self, config: ConfigConciliacion):
-        self.config = config
-    
-    def calcular_similitud_concepto(self, concepto1: str, concepto2: str) -> float:
-        """Calcula similitud entre conceptos"""
-        c1 = Normalizador.concepto_canonico(concepto1)
-        c2 = Normalizador.concepto_canonico(concepto2)
-        
-        if c1 == c2:
-            return self.config.peso_concepto_exacto
-        
-        palabras1 = set(c1.split())
-        palabras2 = set(c2.split())
-        
-        if not palabras1 or not palabras2:
-            return 0.0
-        
-        interseccion = palabras1.intersection(palabras2)
-        union = palabras1.union(palabras2)
-        
-        similitud = len(interseccion) / len(union) if union else 0.0
-        
-        if similitud >= 0.5:
-            return self.config.peso_concepto_similar
-        
-        return 0.0
-    
-    def calcular_score(self, 
-                       criterios_evaluados: int,
-                       criterios_cumplidos: int,
-                       score_concepto: float = 0.0) -> Tuple[str, int, float]:
-        """Calcula el estatus de match"""
-        coincidencias_ajustadas = criterios_cumplidos
-        if score_concepto > 0 and score_concepto < 1.0:
-            coincidencias_ajustadas += score_concepto - 1
-        
-        score_normalizado = coincidencias_ajustadas / criterios_evaluados if criterios_evaluados > 0 else 0.0
-        
-        if criterios_cumplidos >= self.config.umbral_match_ok:
-            return "MATCH_OK", criterios_cumplidos, score_normalizado
-        elif criterios_cumplidos >= self.config.umbral_match_con_discrepancia:
-            return "MATCH_CON_DISCREPANCIA", criterios_cumplidos, score_normalizado
-        else:
-            return "NO_MATCH", criterios_cumplidos, score_normalizado
 
 
 # ============================================================
-# PREPARACIÓN DE DATOS
+# UTILIDADES
 # ============================================================
 
-class PreparadorDatos:
-    """Prepara y normaliza datos de diferentes fuentes"""
-    
-    def __init__(self, config: ConfigConciliacion):
-        self.config = config
-        self.norm = Normalizador()
-    
-    def preparar_contabilidad(self, 
-                             df: pd.DataFrame, 
-                             tipo_mov: Optional[str] = None) -> Tuple[pd.DataFrame, Dict[str, str]]:
-        """Prepara datos de contabilidad"""
-        out = df.copy()
-        
-        col_map = {
-            'movimiento': self._resolver_col(df, ['TipoMovimiento', 'Movimiento', 'Tipo Movimiento']),
-            'poliza': self._resolver_col(df, ['ClavePoliza', 'Clave Poliza', 'Factura', 'Contrarrecibo']),
-            'unidad': self._resolver_col(df, ['Unidad', 'Numero de Unidad', 'NumeroUnidad', 'IdUnidad']),
-            'referencia': self._resolver_col(df, ['Referencia', 'Numero_Viaje', 'NumeroViaje', 'Viaje'], required=False),
-            'concepto': self._resolver_col(df, ['ConceptoDetalle', 'Concepto Detalle', 'Concepto', 'NombreCuentaContable'], required=False),
-            'importe': self._elegir_col_importe(df),
-            'vale': self._resolver_col(df, ['Vale', 'No Vale', 'NumeroVale'], required=False),
-            'tipo_pago': self._resolver_col(df, ['TipoPago', 'Tipo Pago', 'IdTipoPago'], required=False),
-        }
-        
-        out['TIPO_MOV'] = out[col_map['movimiento']].apply(self.norm.texto)
-        out['POLIZA_KEY'] = out[col_map['poliza']].apply(self.norm.clave)
-        out['UNIDAD_KEY'] = out[col_map['unidad']].apply(self.norm.clave)
-        out['VIAJE_KEY'] = out[col_map['referencia']].apply(self.norm.clave) if col_map['referencia'] else ""
-        out['VALE_KEY'] = out[col_map['vale']].apply(self.norm.clave) if col_map['vale'] else ""
-        out['CONCEPTO_KEY'] = out[col_map['concepto']].apply(self.norm.concepto_canonico) if col_map['concepto'] else ""
-        out['IMPORTE_KEY'] = out[col_map['importe']].apply(lambda x: self.norm.monto(x, self.config.ndigits))
-        out['TIPO_PAGO_KEY'] = out[col_map['tipo_pago']].apply(self.norm.clave) if col_map['tipo_pago'] else ""
-        
-        out['ROW_ID_CONT'] = range(1, len(out) + 1)
-        
-        if tipo_mov is not None:
-            out = out[out['TIPO_MOV'] == self.norm.texto(tipo_mov)].copy()
-        
-        return out, col_map
-    
-    def preparar_liquidaciones(self, 
-                              df: pd.DataFrame, 
-                              tipo_concepto: str = 'E') -> pd.DataFrame:
-        """Prepara liquidaciones para matching"""
-        
-        col_map = {
-            'pr': self._resolver_col(df, ['Liquidacion', 'PR', 'NumeroLiquidacion']),
-            'viaje': self._resolver_col(df, ['Numero_Viaje', 'NumeroViaje', 'Viaje']),
-            'tipo_pago': self._resolver_col(df, ['TipoPago', 'Tipo Pago']),
-            'importe': self._resolver_col(df, ['Monto', 'Importe', 'Total']),
-            'unidad': self._resolver_col(df, ['Unidad']),
-            'owner': self._resolver_col(df, ['Owner', 'Operador'], required=False),
-            'tipo_concepto': self._resolver_col(df, ['Tipo_Concepto', 'TipoConcepto']),
-            'concepto': self._resolver_col(df, ['Concepto'], required=False),
-        }
-        
-        out = df.copy()
-        
-        # Filtrar por tipo de concepto
-        out = out[out[col_map['tipo_concepto']].apply(self.norm.texto) == self.norm.texto(tipo_concepto)].copy()
-        
-        # Normalizar llaves
-        out['PR_KEY'] = out[col_map['pr']].apply(self.norm.clave)
-        out['VIAJE_KEY'] = out[col_map['viaje']].apply(self.norm.clave)
-        out['TIPO_PAGO_KEY'] = out[col_map['tipo_pago']].apply(self.norm.clave)
-        out['UNIDAD_KEY'] = out[col_map['unidad']].apply(self.norm.clave)
-        out['IMPORTE_KEY'] = out[col_map['importe']].apply(lambda x: self.norm.monto(x, self.config.ndigits))
-        
-        if col_map['owner']:
-            out['OWNER_KEY'] = out[col_map['owner']].apply(self.norm.clave)
-            out['OWNER_ORIGINAL'] = out[col_map['owner']].apply(self.norm.texto)
-        else:
-            out['OWNER_KEY'] = ""
-            out['OWNER_ORIGINAL'] = ""
-        
-        if col_map['concepto']:
-            out['CONCEPTO_KEY'] = out[col_map['concepto']].apply(self.norm.concepto_canonico)
-        else:
-            out['CONCEPTO_KEY'] = ""
-        
-        out['ROW_ID_LIQ'] = range(1, len(out) + 1)
-        
-        return out
-    
-    def preparar_base_saldos(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Prepara Base Saldos corregida"""
-        out = df.copy()
-        
-        col_map = {
-            'contrarecibo': self._resolver_col(df, ['FOLIO_CONTRARECIBO', 'Contrarecibo', 'FolioContrarecibo']),
-            'unidad': self._resolver_col(df, ['NUMERO_UNIDAD', 'Unidad', 'NumeroUnidad']),
-            'viaje': self._resolver_col(df, ['NUMERO_VIAJE', 'Viaje', 'NumeroViaje']),
-            'importe': self._resolver_col(df, ['Importe', 'IMPORTE', 'Monto']),
-            'concepto': self._resolver_col(df, ['Concepto contabilidad', 'ConceptoContabilidad', 'Concepto'], required=False),
-            'owner': self._resolver_col(df, ['ID_OWNER', 'Owner', 'IdOwner'], required=False),
-        }
-        
-        out['POLIZA_KEY'] = out[col_map['contrarecibo']].apply(self.norm.clave)
-        out['UNIDAD_KEY'] = out[col_map['unidad']].apply(self.norm.clave)
-        out['VIAJE_KEY'] = out[col_map['viaje']].apply(self.norm.clave)
-        out['CONCEPTO_KEY'] = out[col_map['concepto']].apply(self.norm.concepto_canonico) if col_map['concepto'] else ""
-        out['IMPORTE_KEY'] = out[col_map['importe']].apply(lambda x: self.norm.monto(x, self.config.ndigits))
-        
-        if col_map['owner']:
-            out['OWNER_KEY'] = out[col_map['owner']].astype(str).apply(self.norm.clave)
-            out['OWNER_ORIGINAL'] = out[col_map['owner']].astype(str).apply(self.norm.texto)
-        else:
-            out['OWNER_KEY'] = ""
-            out['OWNER_ORIGINAL'] = ""
-        
-        out['ROW_ID_BASE'] = range(1, len(out) + 1)
-        out['ORIGEN'] = 'BASE_SALDOS'
-        
-        return out
-    
-    def preparar_cheques(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
-        """Prepara Cheques excluyendo CargoA = Company"""
-        col_map = {
-            'cargo_a': self._resolver_col(df, ['CargoA', 'Cargo A', 'CargadoA']),
-            'unidad': self._resolver_col(df, ['Unidad'], required=False),
-            'viaje': self._resolver_col(df, ['Viaje'], required=False),
-            'concepto': self._resolver_col(df, ['Concepto'], required=False),
-            'contrarecibo': self._resolver_col(df, ['Contrarecibo', 'ContraRecibo'], required=False),
-            'importe': self._resolver_col(df, ['Importe', 'Total', 'Monto']),
-            'vale': self._resolver_col(df, ['Vale'], required=False),
-            'operador': self._resolver_col(df, ['Operador', 'Owner'], required=False),
-        }
-        
-        df_work = df.copy()
-        df_work['CARGO_A_NORM'] = df_work[col_map['cargo_a']].apply(self.norm.texto)
-        
-        excluidos = df_work[df_work['CARGO_A_NORM'] == 'COMPANY'].copy()
-        validos = df_work[df_work['CARGO_A_NORM'] != 'COMPANY'].copy()
-        
-        for df_temp in [validos]:
-            df_temp['UNIDAD_KEY'] = df_temp[col_map['unidad']].apply(self.norm.clave) if col_map['unidad'] else ""
-            df_temp['VIAJE_KEY'] = df_temp[col_map['viaje']].apply(self.norm.clave) if col_map['viaje'] else ""
-            df_temp['CONCEPTO_KEY'] = df_temp[col_map['concepto']].apply(self.norm.concepto_canonico) if col_map['concepto'] else ""
-            df_temp['POLIZA_KEY'] = df_temp[col_map['contrarecibo']].apply(self.norm.clave) if col_map['contrarecibo'] else ""
-            df_temp['VALE_KEY'] = df_temp[col_map['vale']].apply(self.norm.clave) if col_map['vale'] else ""
-            df_temp['IMPORTE_KEY'] = df_temp[col_map['importe']].apply(lambda x: self.norm.monto(x, self.config.ndigits))
-            df_temp['ORIGEN'] = 'CHEQUE'
-            
-            if col_map['operador']:
-                df_temp['OWNER_KEY'] = df_temp[col_map['operador']].apply(self.norm.clave)
-                df_temp['OWNER_ORIGINAL'] = df_temp[col_map['operador']].apply(self.norm.texto)
-            else:
-                df_temp['OWNER_KEY'] = ""
-                df_temp['OWNER_ORIGINAL'] = ""
-        
-        validos['ROW_ID_CHEQUE'] = range(1, len(validos) + 1)
-        excluidos['ROW_ID_CHEQUE_EXCL'] = range(1, len(excluidos) + 1)
-        
-        return validos, excluidos
-    
-    def preparar_vouchers(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
-        """Prepara Vouchers excluyendo Operador FILIAL"""
-        col_map = {
-            'operador': self._resolver_col(df, ['Operador']),
-            'unidad': self._resolver_col(df, ['Unidad'], required=False),
-            'concepto': self._resolver_col(df, ['Concepto'], required=False),
-            'contrarecibo': self._resolver_col(df, ['Contrarecibo', 'ContraRecibo'], required=False),
-            'importe': self._resolver_col(df, ['Total', 'Importe', 'Monto']),
-            'vale': self._resolver_col(df, ['Vale']),
-        }
-        
-        df_work = df.copy()
-        df_work['OPERADOR_NORM'] = df_work[col_map['operador']].apply(self.norm.texto)
-        
-        excluidos = df_work[df_work['OPERADOR_NORM'].str.contains('FILIAL', na=False)].copy()
-        validos = df_work[~df_work['OPERADOR_NORM'].str.contains('FILIAL', na=False)].copy()
-        
-        for df_temp in [validos]:
-            df_temp['UNIDAD_KEY'] = df_temp[col_map['unidad']].apply(self.norm.clave) if col_map['unidad'] else ""
-            df_temp['CONCEPTO_KEY'] = df_temp[col_map['concepto']].apply(self.norm.concepto_canonico) if col_map['concepto'] else ""
-            df_temp['POLIZA_KEY'] = df_temp[col_map['contrarecibo']].apply(self.norm.clave) if col_map['contrarecibo'] else ""
-            df_temp['VALE_KEY'] = df_temp[col_map['vale']].apply(self.norm.clave)
-            df_temp['IMPORTE_KEY'] = df_temp[col_map['importe']].apply(lambda x: self.norm.monto(x, self.config.ndigits))
-            df_temp['ORIGEN'] = 'VOUCHER'
-            df_temp['OWNER_KEY'] = df_temp[col_map['operador']].apply(self.norm.clave)
-            df_temp['OWNER_ORIGINAL'] = df_temp[col_map['operador']].apply(self.norm.texto)
-        
-        validos['ROW_ID_VOUCHER'] = range(1, len(validos) + 1)
-        excluidos['ROW_ID_VOUCHER_EXCL'] = range(1, len(excluidos) + 1)
-        
-        return validos, excluidos
-    
-    def _resolver_col(self, df: pd.DataFrame, candidatos: List[str], required: bool = True) -> Optional[str]:
-        """Resuelve nombre de columna de una lista de candidatos"""
-        norm_map = {self.norm.clave(c): c for c in df.columns}
-        
-        for candidato in candidatos:
-            key = self.norm.clave(candidato)
-            if key in norm_map:
-                return norm_map[key]
-        
-        if required:
-            raise ValueError(f"No encontré columna de: {candidatos}. Disponibles: {list(df.columns)}")
-        return None
-    
-    def _elegir_col_importe(self, df: pd.DataFrame) -> str:
-        """Elige la columna de importe correcta"""
-        candidatos = ['Importe', 'Monto', 'Total']
-        cols_importe = []
-        
-        for col in df.columns:
-            base = re.sub(r'\.\d+$', '', str(col))
-            if self.norm.clave(base) in [self.norm.clave(c) for c in candidatos]:
-                cols_importe.append(col)
-        
-        if not cols_importe:
-            raise ValueError(f"No encontré columna de importe. Columnas: {list(df.columns)}")
-        
-        return cols_importe[-1]
-
-
-# ============================================================
-# MOTOR DE MATCHING OPTIMIZADO
-# ============================================================
-
-class MotorMatchingOptimizado:
-    """Motor de matching con indexación para O(1) lookup"""
-    
-    def __init__(self, config: ConfigConciliacion):
-        self.config = config
-        self.scorer = ScoringMatcher(config)
-        self.norm = Normalizador()
-    
-    def match_liquidaciones_vs_contabilidad(self, 
-                                           liquidaciones: pd.DataFrame, 
-                                           contabilidad_h: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-        """Match OPTIMIZADO de Liquidaciones vs Contabilidad H"""
-        
-        st.info(f"🔍 Matching Liquidaciones ({len(liquidaciones):,}) vs Contabilidad H ({len(contabilidad_h):,})...")
-        
-        # OPTIMIZACIÓN: Crear índice por PR_KEY
-        st.write("📊 Creando índice de búsqueda...")
-        indice_cont = self._crear_indice_por_pr(contabilidad_h)
-        
-        resultados = []
-        batch_size = 5000  # Lotes más grandes
-        total_batches = (len(liquidaciones) + batch_size - 1) // batch_size
-        
-        progress_bar = st.progress(0, text="Iniciando matching...")
-        
-        for batch_num in range(total_batches):
-            inicio_batch = batch_num * batch_size
-            fin_batch = min((batch_num + 1) * batch_size, len(liquidaciones))
-            batch = liquidaciones.iloc[inicio_batch:fin_batch]
-            
-            # Procesar batch
-            for _, row_liq in batch.iterrows():
-                mejor_match = self._buscar_match_liq_optimizado(row_liq, indice_cont, contabilidad_h)
-                resultados.append(mejor_match)
-            
-            # Actualizar progreso
-            progreso = (batch_num + 1) / total_batches
-            progress_bar.progress(progreso, text=f"Procesando: {fin_batch:,} / {len(liquidaciones):,} ({progreso*100:.1f}%)")
-        
-        progress_bar.empty()
-        
-        df_matches = pd.DataFrame(resultados)
-        
-        liq_clas = liquidaciones.merge(
-            df_matches[['ROW_ID_LIQ', 'ROW_ID_CONT', 'ESTATUS_MATCH', 'TOTAL_COINCIDENCIAS', 'SCORE']],
-            on='ROW_ID_LIQ',
-            how='left'
-        )
-        liq_clas['ESTATUS_MATCH'] = liq_clas['ESTATUS_MATCH'].fillna('NO_EXISTE_EN_CONTABILIDAD_H')
-        
-        cont_clas = self._clasificar_contabilidad_inversa(contabilidad_h, df_matches, 'LIQUIDACIONES')
-        
-        return liq_clas, cont_clas, df_matches
-    
-    def _crear_indice_por_pr(self, contabilidad: pd.DataFrame) -> Dict:
-        """Crea índice por PR_KEY para lookup O(1)"""
-        indice = defaultdict(list)
-        
-        for idx, row in contabilidad.iterrows():
-            pr_key = row['POLIZA_KEY']
-            if pr_key:
-                indice[pr_key].append(idx)
-        
-        return indice
-    
-    def _buscar_match_liq_optimizado(self, row_liq: pd.Series, indice_cont: Dict, contabilidad_h: pd.DataFrame) -> Dict:
-        """Búsqueda optimizada usando índice"""
-        
-        pr_key = row_liq['PR_KEY']
-        
-        # Lookup O(1) en índice
-        if pr_key and pr_key in indice_cont:
-            indices_candidatos = indice_cont[pr_key]
-            candidatos = contabilidad_h.iloc[indices_candidatos]
-        else:
-            # No hay candidatos con este PR
-            return {
-                'ROW_ID_LIQ': row_liq['ROW_ID_LIQ'],
-                'ROW_ID_CONT': None,
-                'ESTATUS_MATCH': 'NO_EXISTE_EN_CONTABILIDAD_H',
-                'TOTAL_COINCIDENCIAS': 0,
-                'SCORE': 0.0,
-            }
-        
-        # Evaluar candidatos
-        mejor_score = -1
-        mejor_match = None
-        
-        for _, row_cont in candidatos.iterrows():
-            coincidencias = 0
-            
-            # 1. PR
-            if row_liq['PR_KEY'] == row_cont['POLIZA_KEY']:
-                coincidencias += 1
-            
-            # 2. VIAJE
-            if row_liq['VIAJE_KEY'] and row_liq['VIAJE_KEY'] == row_cont['VIAJE_KEY']:
-                coincidencias += 1
-            
-            # 3. TIPO_PAGO
-            if row_liq['TIPO_PAGO_KEY'] and row_liq['TIPO_PAGO_KEY'] == row_cont.get('TIPO_PAGO_KEY', ''):
-                coincidencias += 1
-            
-            # 4. UNIDAD
-            if row_liq['UNIDAD_KEY'] and row_liq['UNIDAD_KEY'] == row_cont['UNIDAD_KEY']:
-                coincidencias += 1
-            
-            # 5. IMPORTE
-            if not pd.isna(row_liq['IMPORTE_KEY']) and not pd.isna(row_cont['IMPORTE_KEY']):
-                if abs(row_liq['IMPORTE_KEY'] - row_cont['IMPORTE_KEY']) < 0.01:
-                    coincidencias += 1
-            
-            estatus, _, score_norm = self.scorer.calcular_score(5, coincidencias)
-            
-            if coincidencias > mejor_score:
-                mejor_score = coincidencias
-                mejor_match = {
-                    'row_id_cont': row_cont['ROW_ID_CONT'],
-                    'coincidencias': coincidencias,
-                    'score': score_norm,
-                    'estatus': estatus,
-                }
-        
-        if mejor_match:
-            return {
-                'ROW_ID_LIQ': row_liq['ROW_ID_LIQ'],
-                'ROW_ID_CONT': mejor_match['row_id_cont'],
-                'ESTATUS_MATCH': mejor_match['estatus'],
-                'TOTAL_COINCIDENCIAS': mejor_match['coincidencias'],
-                'SCORE': mejor_match['score'],
-            }
-        
-        return {
-            'ROW_ID_LIQ': row_liq['ROW_ID_LIQ'],
-            'ROW_ID_CONT': None,
-            'ESTATUS_MATCH': 'NO_EXISTE_EN_CONTABILIDAD_H',
-            'TOTAL_COINCIDENCIAS': 0,
-            'SCORE': 0.0,
-        }
-    
-    def match_base_vs_contabilidad(self, base: pd.DataFrame, contabilidad: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-        """Match optimizado Base vs Contabilidad"""
-        st.info(f"🔍 Matching Base Saldos ({len(base):,}) vs Contabilidad ({len(contabilidad):,})...")
-        
-        indice_cont = self._crear_indice_por_poliza(contabilidad)
-        
-        resultados = []
-        batch_size = 5000
-        total_batches = (len(base) + batch_size - 1) // batch_size
-        
-        progress_bar = st.progress(0, text="Iniciando matching...")
-        
-        for batch_num in range(total_batches):
-            inicio_batch = batch_num * batch_size
-            fin_batch = min((batch_num + 1) * batch_size, len(base))
-            batch = base.iloc[inicio_batch:fin_batch]
-            
-            for _, row_base in batch.iterrows():
-                mejor_match = self._buscar_match_base_optimizado(row_base, indice_cont, contabilidad)
-                resultados.append(mejor_match)
-            
-            progreso = (batch_num + 1) / total_batches
-            progress_bar.progress(progreso, text=f"Procesando: {fin_batch:,} / {len(base):,} ({progreso*100:.1f}%)")
-        
-        progress_bar.empty()
-        
-        df_matches = pd.DataFrame(resultados)
-        
-        base_clas = base.merge(
-            df_matches[['ROW_ID_BASE', 'ROW_ID_CONT', 'ESTATUS_MATCH', 'TOTAL_COINCIDENCIAS', 'SCORE']],
-            on='ROW_ID_BASE',
-            how='left'
-        )
-        base_clas['ESTATUS_MATCH'] = base_clas['ESTATUS_MATCH'].fillna('NO_EXISTE_EN_CONTABILIDAD_D')
-        
-        cont_clas = self._clasificar_contabilidad_inversa(contabilidad, df_matches, 'BASE')
-        
-        return base_clas, cont_clas, df_matches
-    
-    def _crear_indice_por_poliza(self, contabilidad: pd.DataFrame) -> Dict:
-        """Crea índice por POLIZA_KEY"""
-        indice = defaultdict(list)
-        
-        for idx, row in contabilidad.iterrows():
-            poliza_key = row['POLIZA_KEY']
-            if poliza_key:
-                indice[poliza_key].append(idx)
-        
-        return indice
-    
-    def _buscar_match_base_optimizado(self, row_base: pd.Series, indice_cont: Dict, contabilidad: pd.DataFrame) -> Dict:
-        """Búsqueda optimizada para Base Saldos"""
-        
-        poliza_key = row_base['POLIZA_KEY']
-        
-        if poliza_key and poliza_key in indice_cont:
-            indices_candidatos = indice_cont[poliza_key]
-            candidatos = contabilidad.iloc[indices_candidatos]
-        else:
-            return {
-                'ROW_ID_BASE': row_base['ROW_ID_BASE'],
-                'ROW_ID_CONT': None,
-                'ESTATUS_MATCH': 'NO_EXISTE_EN_CONTABILIDAD_D',
-                'TOTAL_COINCIDENCIAS': 0,
-                'SCORE': 0.0,
-            }
-        
-        mejor_score = -1
-        mejor_match = None
-        
-        for _, row_cont in candidatos.iterrows():
-            coincidencias = 0
-            
-            if row_base['POLIZA_KEY'] == row_cont['POLIZA_KEY']:
-                coincidencias += 1
-            
-            if row_base['UNIDAD_KEY'] and row_base['UNIDAD_KEY'] == row_cont['UNIDAD_KEY']:
-                coincidencias += 1
-            
-            if row_base['VIAJE_KEY'] and row_base['VIAJE_KEY'] == row_cont['VIAJE_KEY']:
-                coincidencias += 1
-            
-            score_concepto = 0.0
-            if row_base['CONCEPTO_KEY'] and row_cont['CONCEPTO_KEY']:
-                score_concepto = self.scorer.calcular_similitud_concepto(row_base['CONCEPTO_KEY'], row_cont['CONCEPTO_KEY'])
-                if score_concepto >= self.config.peso_concepto_similar:
-                    coincidencias += 1
-            
-            if not pd.isna(row_base['IMPORTE_KEY']) and not pd.isna(row_cont['IMPORTE_KEY']):
-                if abs(row_base['IMPORTE_KEY'] - row_cont['IMPORTE_KEY']) < 0.01:
-                    coincidencias += 1
-            
-            estatus, _, score_norm = self.scorer.calcular_score(5, coincidencias, score_concepto)
-            
-            if coincidencias > mejor_score:
-                mejor_score = coincidencias
-                mejor_match = {
-                    'row_id_cont': row_cont['ROW_ID_CONT'],
-                    'coincidencias': coincidencias,
-                    'score': score_norm,
-                    'estatus': estatus,
-                }
-        
-        if mejor_match:
-            return {
-                'ROW_ID_BASE': row_base['ROW_ID_BASE'],
-                'ROW_ID_CONT': mejor_match['row_id_cont'],
-                'ESTATUS_MATCH': mejor_match['estatus'],
-                'TOTAL_COINCIDENCIAS': mejor_match['coincidencias'],
-                'SCORE': mejor_match['score'],
-            }
-        
-        return {
-            'ROW_ID_BASE': row_base['ROW_ID_BASE'],
-            'ROW_ID_CONT': None,
-            'ESTATUS_MATCH': 'NO_EXISTE_EN_CONTABILIDAD_D',
-            'TOTAL_COINCIDENCIAS': 0,
-            'SCORE': 0.0,
-        }
-    
-    def match_costos_vs_contabilidad(self, costos: pd.DataFrame, contabilidad: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-        """Match optimizado Costos vs Contabilidad"""
-        st.info(f"🔍 Matching Costos ({len(costos):,}) vs Contabilidad ({len(contabilidad):,})...")
-        
-        indice_cont = self._crear_indice_por_vale(contabilidad)
-        
-        resultados = []
-        batch_size = 5000
-        total_batches = (len(costos) + batch_size - 1) // batch_size
-        
-        progress_bar = st.progress(0, text="Iniciando matching...")
-        
-        for batch_num in range(total_batches):
-            inicio_batch = batch_num * batch_size
-            fin_batch = min((batch_num + 1) * batch_size, len(costos))
-            batch = costos.iloc[inicio_batch:fin_batch]
-            
-            for _, row_costo in batch.iterrows():
-                mejor_match = self._buscar_match_costo_optimizado(row_costo, indice_cont, contabilidad)
-                resultados.append(mejor_match)
-            
-            progreso = (batch_num + 1) / total_batches
-            progress_bar.progress(progreso, text=f"Procesando: {fin_batch:,} / {len(costos):,} ({progreso*100:.1f}%)")
-        
-        progress_bar.empty()
-        
-        df_matches = pd.DataFrame(resultados)
-        
-        costos_clas = costos.merge(
-            df_matches[['ROW_ID_COSTO', 'ROW_ID_CONT', 'ESTATUS_MATCH', 'TOTAL_COINCIDENCIAS', 'SCORE']],
-            on='ROW_ID_COSTO',
-            how='left'
-        )
-        costos_clas['ESTATUS_MATCH'] = costos_clas['ESTATUS_MATCH'].fillna('NO_EXISTE_EN_CONTABILIDAD_D')
-        
-        cont_clas = self._clasificar_contabilidad_inversa(contabilidad, df_matches, 'COSTOS')
-        
-        return costos_clas, cont_clas, df_matches
-    
-    def _crear_indice_por_vale(self, contabilidad: pd.DataFrame) -> Dict:
-        """Crea índice por VALE_KEY"""
-        indice = defaultdict(list)
-        
-        for idx, row in contabilidad.iterrows():
-            vale_key = row.get('VALE_KEY', '')
-            if vale_key:
-                indice[vale_key].append(idx)
-        
-        return indice
-    
-    def _buscar_match_costo_optimizado(self, row_costo: pd.Series, indice_cont: Dict, contabilidad: pd.DataFrame) -> Dict:
-        """Búsqueda optimizada para Costos"""
-        
-        vale_key = row_costo.get('VALE_KEY', '')
-        
-        if vale_key and vale_key in indice_cont:
-            indices_candidatos = indice_cont[vale_key]
-            candidatos = contabilidad.iloc[indices_candidatos]
-        else:
-            # Búsqueda alternativa (más costosa)
-            candidatos = contabilidad.head(0)  # Vacío para acelerar
-        
-        if candidatos.empty:
-            return {
-                'ROW_ID_COSTO': row_costo['ROW_ID_COSTO'],
-                'ROW_ID_CONT': None,
-                'ESTATUS_MATCH': 'NO_EXISTE_EN_CONTABILIDAD_D',
-                'TOTAL_COINCIDENCIAS': 0,
-                'SCORE': 0.0,
-            }
-        
-        mejor_score = -1
-        mejor_match = None
-        
-        for _, row_cont in candidatos.iterrows():
-            coincidencias = 0
-            criterios_eval = 5
-            
-            if row_costo.get('VALE_KEY') == row_cont['VALE_KEY']:
-                coincidencias += 1
-            
-            if row_costo.get('UNIDAD_KEY') and row_costo['UNIDAD_KEY'] == row_cont['UNIDAD_KEY']:
-                coincidencias += 1
-            
-            score_concepto = 0.0
-            if row_costo.get('CONCEPTO_KEY') and row_cont['CONCEPTO_KEY']:
-                score_concepto = self.scorer.calcular_similitud_concepto(row_costo['CONCEPTO_KEY'], row_cont['CONCEPTO_KEY'])
-                if score_concepto >= self.config.peso_concepto_similar:
-                    coincidencias += 1
-            
-            tiene_contra_costo = row_costo.get('POLIZA_KEY') and row_costo['POLIZA_KEY'] != ""
-            tiene_contra_cont = row_cont['POLIZA_KEY'] and row_cont['POLIZA_KEY'] != ""
-            
-            if tiene_contra_costo and tiene_contra_cont:
-                if row_costo['POLIZA_KEY'] == row_cont['POLIZA_KEY']:
-                    coincidencias += 1
-            elif not tiene_contra_costo and not tiene_contra_cont:
-                criterios_eval -= 1
-            
-            if not pd.isna(row_costo['IMPORTE_KEY']) and not pd.isna(row_cont['IMPORTE_KEY']):
-                if abs(row_costo['IMPORTE_KEY'] - row_cont['IMPORTE_KEY']) < 0.01:
-                    coincidencias += 1
-            
-            estatus, _, score_norm = self.scorer.calcular_score(criterios_eval, coincidencias, score_concepto)
-            
-            if coincidencias > mejor_score:
-                mejor_score = coincidencias
-                mejor_match = {
-                    'row_id_cont': row_cont['ROW_ID_CONT'],
-                    'coincidencias': coincidencias,
-                    'score': score_norm,
-                    'estatus': estatus,
-                }
-        
-        if mejor_match:
-            return {
-                'ROW_ID_COSTO': row_costo['ROW_ID_COSTO'],
-                'ROW_ID_CONT': mejor_match['row_id_cont'],
-                'ESTATUS_MATCH': mejor_match['estatus'],
-                'TOTAL_COINCIDENCIAS': mejor_match['coincidencias'],
-                'SCORE': mejor_match['score'],
-            }
-        
-        return {
-            'ROW_ID_COSTO': row_costo['ROW_ID_COSTO'],
-            'ROW_ID_CONT': None,
-            'ESTATUS_MATCH': 'NO_EXISTE_EN_CONTABILIDAD_D',
-            'TOTAL_COINCIDENCIAS': 0,
-            'SCORE': 0.0,
-        }
-    
-    def _clasificar_contabilidad_inversa(self, contabilidad: pd.DataFrame, matches: pd.DataFrame, origen: str) -> pd.DataFrame:
-        """Clasifica contabilidad desde perspectiva inversa"""
-        col_id_origen = 'ROW_ID_BASE' if origen == 'BASE' else ('ROW_ID_COSTO' if origen == 'COSTOS' else 'ROW_ID_LIQ')
-        
-        cont_con_match = matches[matches['ROW_ID_CONT'].notna()].copy()
-        
-        cont_clas = contabilidad.merge(
-            cont_con_match[['ROW_ID_CONT', col_id_origen, 'ESTATUS_MATCH', 'TOTAL_COINCIDENCIAS', 'SCORE']],
-            on='ROW_ID_CONT',
-            how='left'
-        )
-        
-        cont_clas['ESTATUS_MATCH'] = cont_clas['ESTATUS_MATCH'].fillna(f'NO_EXISTE_EN_{origen}')
-        
-        return cont_clas
-
-
-# ============================================================
-# RESTO DE COMPONENTES (sin cambios)
-# ============================================================
-
-class DeduplicadorCostos:
-    """Detecta y elimina duplicados entre Cheques y Vouchers"""
-    
-    def __init__(self, config: ConfigConciliacion):
-        self.config = config
-        self.norm = Normalizador()
-    
-    def deduplicate(self, cheques: pd.DataFrame, vouchers: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
-        """Combina Cheques y Vouchers eliminando duplicados"""
-        cheques_work = cheques.copy()
-        vouchers_work = vouchers.copy()
-        
-        columnas_clave = ['VALE_KEY', 'UNIDAD_KEY', 'CONCEPTO_KEY', 'IMPORTE_KEY', 'POLIZA_KEY', 'ORIGEN', 'OWNER_KEY', 'OWNER_ORIGINAL']
-        
-        for col in columnas_clave:
-            if col not in cheques_work.columns:
-                cheques_work[col] = ""
-            if col not in vouchers_work.columns:
-                vouchers_work[col] = ""
-        
-        cheques_work['ROW_ID_COSTO'] = 'CHQ_' + cheques_work['ROW_ID_CHEQUE'].astype(str)
-        vouchers_work['ROW_ID_COSTO'] = 'VOU_' + vouchers_work['ROW_ID_VOUCHER'].astype(str)
-        
-        todos_costos = pd.concat([cheques_work, vouchers_work], ignore_index=True)
-        
-        duplicados_mask = pd.Series(False, index=todos_costos.index)
-        duplicados_info = []
-        
-        st.info(f"🔍 Detectando duplicados en {len(todos_costos):,} registros...")
-        
-        grupos_vale = todos_costos.groupby('VALE_KEY')
-        
-        for vale, grupo in grupos_vale:
-            if len(grupo) < 2 or vale == "":
-                continue
-            
-            for i, row1 in grupo.iterrows():
-                if duplicados_mask[i]:
-                    continue
-                
-                for j, row2 in grupo.iterrows():
-                    if i >= j or duplicados_mask[j]:
-                        continue
-                    
-                    es_duplicado = self._son_duplicados(row1, row2)
-                    
-                    if es_duplicado:
-                        duplicados_mask[j] = True
-                        duplicados_info.append({
-                            'ROW_ID_COSTO_ORIGINAL': row1['ROW_ID_COSTO'],
-                            'ROW_ID_COSTO_DUPLICADO': row2['ROW_ID_COSTO'],
-                            'ORIGEN_ORIGINAL': row1['ORIGEN'],
-                            'ORIGEN_DUPLICADO': row2['ORIGEN'],
-                            'VALE': vale,
-                            'IMPORTE': row1['IMPORTE_KEY'],
-                        })
-        
-        depurados = todos_costos[~duplicados_mask].copy()
-        duplicados_df = todos_costos[duplicados_mask].copy()
-        
-        if duplicados_info:
-            duplicados_detalle = pd.DataFrame(duplicados_info)
-            duplicados_df = duplicados_df.merge(
-                duplicados_detalle,
-                left_on='ROW_ID_COSTO',
-                right_on='ROW_ID_COSTO_DUPLICADO',
-                how='left'
-            )
-        
-        st.success(f"✅ Depurados: {len(depurados):,} | Duplicados: {len(duplicados_df):,}")
-        
-        return depurados, duplicados_df
-    
-    def _son_duplicados(self, row1: pd.Series, row2: pd.Series) -> bool:
-        """Determina si dos filas son duplicadas"""
-        criterios_cumplidos = 0
-        
-        if row1['VALE_KEY'] and row1['VALE_KEY'] == row2['VALE_KEY']:
-            criterios_cumplidos += 1
-        else:
-            return False
-        
-        if row1['UNIDAD_KEY'] and row1['UNIDAD_KEY'] == row2['UNIDAD_KEY']:
-            criterios_cumplidos += 1
-        
-        if row1['CONCEPTO_KEY'] and row2['CONCEPTO_KEY']:
-            if row1['CONCEPTO_KEY'] == row2['CONCEPTO_KEY']:
-                criterios_cumplidos += 1
-        
-        if not pd.isna(row1['IMPORTE_KEY']) and not pd.isna(row2['IMPORTE_KEY']):
-            if abs(row1['IMPORTE_KEY'] - row2['IMPORTE_KEY']) < 0.01:
-                criterios_cumplidos += 1
-        
-        return criterios_cumplidos >= 3
-
-
-class AnalizadorDH:
-    """Analiza saldos D vs H en contabilidad"""
-    
-    @staticmethod
-    def calcular_saldos(contabilidad_completa: pd.DataFrame) -> pd.DataFrame:
-        """Calcula saldos D vs H agrupando por clave"""
-        if contabilidad_completa.empty:
-            return pd.DataFrame()
-        
-        base = contabilidad_completa.copy()
-        base['IMPORTE_KEY'] = pd.to_numeric(base['IMPORTE_KEY'], errors='coerce').fillna(0)
-        
-        resumen = base.groupby(['POLIZA_KEY', 'UNIDAD_KEY', 'CONCEPTO_KEY'], dropna=False).agg(
-            TOTAL_D=('IMPORTE_KEY', lambda s: s[base.loc[s.index, 'TIPO_MOV'] == 'D'].sum()),
-            TOTAL_H=('IMPORTE_KEY', lambda s: s[base.loc[s.index, 'TIPO_MOV'] == 'H'].sum()),
-            MOVIMIENTOS_D=('IMPORTE_KEY', lambda s: (base.loc[s.index, 'TIPO_MOV'] == 'D').sum()),
-            MOVIMIENTOS_H=('IMPORTE_KEY', lambda s: (base.loc[s.index, 'TIPO_MOV'] == 'H').sum()),
-        ).reset_index()
-        
-        resumen['SALDO_D_MENOS_H'] = resumen['TOTAL_D'] - resumen['TOTAL_H']
-        resumen['ESTATUS_DH'] = resumen['SALDO_D_MENOS_H'].apply(
-            lambda x: 'SALDADO' if abs(x) < 0.01 else ('PENDIENTE_PAGO' if x > 0 else 'SOBREPAGO')
-        )
-        
-        return resumen
+def build_seq(df: pd.DataFrame, key_cols: List[str], seq_col: str = "_seq") -> pd.DataFrame:
+    """Agrega columna de secuencia por grupo (para duplicados)"""
+    out = df.copy()
+    out[seq_col] = out.groupby(key_cols, dropna=False).cumcount() + 1
+    return out
 
 
 class ManejadorArchivos:
@@ -980,54 +107,266 @@ class ManejadorArchivos:
 
 
 # ============================================================
+# MOTOR DE MATCHING (Lógica del script anterior)
+# ============================================================
+
+class MotorMatchingLiquidaciones:
+    """Motor que replica EXACTAMENTE la lógica del script anterior"""
+    
+    def __init__(self, config: ConfigConciliacion):
+        self.config = config
+        self.norm = Normalizador()
+    
+    def match_liquidaciones_vs_contabilidad(self,
+                                           liq: pd.DataFrame,
+                                           cont: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
+        """
+        Matching EXACTO como el script anterior:
+        - Merge por 5 campos: PR, VIAJE, UNIDAD, TIPO_PAGO, IMPORTE
+        - Con secuencia para manejar duplicados
+        """
+        
+        st.info(f"🔍 Matching Liquidaciones ({len(liq):,}) vs Contabilidad ({len(cont):,})...")
+        
+        # Columnas clave para el merge (IGUAL que script anterior)
+        key_cols = ["PR", "VIAJE", "UNIDAD", "TIPO_PAGO", "IMPORTE"]
+        merge_keys = key_cols + ["_seq"]
+        
+        # Agregar secuencia (para manejar duplicados)
+        st.write("📊 Agregando secuencias para duplicados...")
+        liq_k = build_seq(liq, key_cols)
+        cont_k = build_seq(cont, key_cols)
+        
+        # Merge exacto
+        st.write("🔄 Ejecutando merge exacto...")
+        m = liq_k.merge(
+            cont_k,
+            how="outer",
+            on=merge_keys,
+            suffixes=("_LIQ", "_CONT"),
+            indicator=True,
+        )
+        
+        # Clasificar resultados
+        matched = m[m["_merge"] == "both"].copy()
+        only_liq = m[m["_merge"] == "left_only"].copy()
+        only_cont = m[m["_merge"] == "right_only"].copy()
+        
+        st.success(f"✅ MATCH: {len(matched):,} | Solo Liq: {len(only_liq):,} | Solo Cont: {len(only_cont):,}")
+        
+        # Clasificar matched por owner
+        if "OWNER_LIQ" in matched.columns and "OWNER_CONT" in matched.columns:
+            matched["OWNER_MATCH"] = (
+                matched["OWNER_LIQ"].astype("string").fillna("") ==
+                matched["OWNER_CONT"].astype("string").fillna("")
+            )
+            matched["ESTATUS_MATCH"] = matched["OWNER_MATCH"].map({
+                True: "MATCH_OK", 
+                False: "MATCH_CON_DISCREPANCIA"
+            })
+            matched["OBSERVACION"] = matched["OWNER_MATCH"].map({
+                True: "Coincide llave exacta y owner.",
+                False: "Coincide llave exacta, pero owner es distinto.",
+            })
+        else:
+            matched["ESTATUS_MATCH"] = "MATCH_OK"
+            matched["OBSERVACION"] = "Coincide llave exacta."
+        
+        only_liq["ESTATUS_MATCH"] = "NO_EXISTE_EN_CONTABILIDAD"
+        only_liq["OBSERVACION"] = "La fila de Liquidaciones no encontró contraparte exacta en Contabilidad."
+        
+        only_cont["ESTATUS_MATCH"] = "NO_EXISTE_EN_LIQUIDACIONES"
+        only_cont["OBSERVACION"] = "La fila de Contabilidad no encontró contraparte exacta en Liquidaciones."
+        
+        # Reconstruir clasificados
+        liq_clasificado = self._reconstruir_liq_clasificado(liq, matched, only_liq)
+        cont_clasificado = self._reconstruir_cont_clasificado(cont, matched, only_cont)
+        
+        return liq_clasificado, cont_clasificado
+    
+    def _reconstruir_liq_clasificado(self, liq_original: pd.DataFrame, matched: pd.DataFrame, only_liq: pd.DataFrame) -> pd.DataFrame:
+        """Reconstruye liquidaciones clasificadas"""
+        
+        # De matched
+        liq_status_from_matched = matched[[
+            "ROW_ID_LIQ", "ROW_ID_CONT", "ESTATUS_MATCH", "OBSERVACION"
+        ]].copy()
+        
+        if "OWNER_CONT" in matched.columns:
+            liq_status_from_matched["OWNER_CONT"] = matched["OWNER_CONT"]
+        
+        # De only_liq
+        liq_status_from_only = only_liq[["ROW_ID_LIQ", "ESTATUS_MATCH", "OBSERVACION"]].copy()
+        liq_status_from_only["ROW_ID_CONT"] = pd.NA
+        if "OWNER_CONT" in matched.columns:
+            liq_status_from_only["OWNER_CONT"] = ""
+        
+        # Combinar
+        liq_status = pd.concat([liq_status_from_matched, liq_status_from_only], ignore_index=True)
+        liq_clasificado = liq_original.merge(liq_status, on="ROW_ID_LIQ", how="left")
+        
+        return liq_clasificado
+    
+    def _reconstruir_cont_clasificado(self, cont_original: pd.DataFrame, matched: pd.DataFrame, only_cont: pd.DataFrame) -> pd.DataFrame:
+        """Reconstruye contabilidad clasificada"""
+        
+        # De matched
+        cont_status_from_matched = matched[[
+            "ROW_ID_CONT", "ROW_ID_LIQ", "ESTATUS_MATCH", "OBSERVACION"
+        ]].copy()
+        
+        if "OWNER_LIQ" in matched.columns:
+            cont_status_from_matched["OWNER_LIQ"] = matched["OWNER_LIQ"]
+        
+        # De only_cont
+        cont_status_from_only = only_cont[["ROW_ID_CONT", "ESTATUS_MATCH", "OBSERVACION"]].copy()
+        cont_status_from_only["ROW_ID_LIQ"] = pd.NA
+        if "OWNER_LIQ" in matched.columns:
+            cont_status_from_only["OWNER_LIQ"] = ""
+        
+        # Combinar
+        cont_status = pd.concat([cont_status_from_matched, cont_status_from_only], ignore_index=True)
+        cont_clasificado = cont_original.merge(cont_status, on="ROW_ID_CONT", how="left")
+        
+        return cont_clasificado
+
+
+# ============================================================
+# PREPARADORES ESPECÍFICOS
+# ============================================================
+
+class PreparadorLiquidaciones:
+    """Prepara liquidaciones EXACTAMENTE como script anterior"""
+    
+    def __init__(self, config: ConfigConciliacion):
+        self.config = config
+        self.norm = Normalizador()
+    
+    def preparar(self, df: pd.DataFrame, tipo_concepto: str = 'E') -> pd.DataFrame:
+        """Prepara liquidaciones"""
+        
+        # Renombrar columnas (IGUAL que script anterior)
+        out = df.rename(columns={
+            "Liquidacion": "PR",
+            "Numero_Viaje": "VIAJE",
+            "TipoPago": "TIPO_PAGO",
+            "Monto": "IMPORTE",
+            "Unidad": "UNIDAD",
+            "Owner": "OWNER_LIQ",
+            "Tipo_Concepto": "TIPO_CONCEPTO",
+        })
+        
+        # Normalizar campos de texto
+        for c in ["PR", "VIAJE", "TIPO_PAGO", "UNIDAD", "OWNER_LIQ", "TIPO_CONCEPTO"]:
+            if c in out.columns:
+                out[c] = out[c].apply(self.norm.texto)
+        
+        # Normalizar importe
+        out["IMPORTE"] = pd.to_numeric(
+            out["IMPORTE"].apply(lambda x: self.norm.monto(x, self.config.ndigits)), 
+            errors="coerce"
+        )
+        
+        # Filtrar por tipo de concepto
+        out = out[out["TIPO_CONCEPTO"] == tipo_concepto].copy()
+        
+        # Resetear índice y agregar ROW_ID
+        out = out.reset_index(drop=True)
+        out["ROW_ID_LIQ"] = out.index + 1
+        
+        return out
+
+
+class PreparadorContabilidad:
+    """Prepara contabilidad EXACTAMENTE como script anterior"""
+    
+    def __init__(self, config: ConfigConciliacion):
+        self.config = config
+        self.norm = Normalizador()
+    
+    def preparar(self, df: pd.DataFrame, tipo_mov: str = 'H') -> pd.DataFrame:
+        """Prepara contabilidad"""
+        
+        # Renombrar columnas (CLAVE: Usar "Factura", NO "ClavePoliza")
+        out = df.rename(columns={
+            "Factura": "PR",  # ← ESTO ES CRÍTICO
+            "Referencia": "VIAJE",
+            "TipoPago": "TIPO_PAGO",
+            "Importe": "IMPORTE",
+            "Unidad": "UNIDAD",
+            "NombreCuentaContable": "OWNER_CONT",
+            "TipoMovimiento": "TIPO_MOV",
+        })
+        
+        # Normalizar campos de texto
+        for c in ["PR", "VIAJE", "TIPO_PAGO", "UNIDAD", "OWNER_CONT", "TIPO_MOV"]:
+            if c in out.columns:
+                out[c] = out[c].apply(self.norm.texto)
+        
+        # Normalizar importe
+        out["IMPORTE"] = pd.to_numeric(
+            out["IMPORTE"].apply(lambda x: self.norm.monto(x, self.config.ndigits)), 
+            errors="coerce"
+        )
+        
+        # Filtrar por tipo de movimiento
+        out = out[out["TIPO_MOV"] == tipo_mov].copy()
+        
+        # Resetear índice y agregar ROW_ID
+        out = out.reset_index(drop=True)
+        out["ROW_ID_CONT"] = out.index + 1
+        
+        return out
+
+
+# ============================================================
 # INTERFAZ STREAMLIT
 # ============================================================
 
 def main():
-    st.set_page_config(page_title="Sistema de Conciliación Owner v3.2", layout="wide")
+    st.set_page_config(page_title="Sistema de Conciliación Owner v3.3", layout="wide")
     
     st.title("🔄 Sistema Unificado de Conciliación de Saldos Owner")
-    st.caption("Versión 3.2 - ULTRA-OPTIMIZADA con indexación eficiente")
+    st.caption("Versión 3.3 - CORREGIDA - Replica lógica exacta del script anterior")
     
     with st.sidebar:
         st.header("⚙️ Configuración")
         
         config = ConfigConciliacion(
             ndigits=st.number_input("Decimales para importes", 0, 4, 2),
-            umbral_match_ok=st.number_input("Umbral MATCH_OK", 3, 5, 5),
-            umbral_match_con_discrepancia=st.number_input("Umbral DISCREPANCIA", 2, 4, 3),
         )
         
         st.divider()
         st.header("📁 Archivos de Entrada")
         
         cont_file = st.file_uploader("📊 Contabilidad (obligatorio)", type=['xlsx', 'xls', 'csv'])
-        
-        st.subheader("Módulo INGRESOS")
         liq_file = st.file_uploader("📈 Liquidaciones", type=['xlsx', 'xls', 'csv'])
         
-        st.subheader("Módulo COSTOS")
-        base_file = st.file_uploader("📋 Base Saldos", type=['xlsx', 'xls', 'csv'])
-        cheques_file = st.file_uploader("💵 Cheques", type=['xlsx', 'xls', 'csv'])
-        vouchers_file = st.file_uploader("🎫 Vouchers", type=['xlsx', 'xls', 'csv'])
+        st.divider()
+        
+        tipo_concepto = st.selectbox("Liquidaciones: Tipo_Concepto", ["E", "I"], index=0)
+        tipo_mov = st.selectbox("Contabilidad: TipoMovimiento", ["H", "D"], index=0)
         
         st.divider()
         
         procesar_btn = st.button("▶️ PROCESAR", type="primary", use_container_width=True)
     
-    with st.expander("ℹ️ Información del Sistema", expanded=False):
+    with st.expander("ℹ️ Versión 3.3 - CAMBIOS", expanded=True):
         st.markdown("""
-        ### ⚡ Versión 3.2 - ULTRA-OPTIMIZADA
+        ### 🔧 Correcciones Aplicadas
         
-        **Mejoras de Performance**:
-        - 🚀 Indexación por clave (lookup O(1))
-        - 📊 Lotes de 5,000 registros
-        - 🎯 Progreso granular con %
-        - 💾 Uso eficiente de memoria
+        **Problema identificado**:
+        - ❌ v3.2 buscaba columna `ClavePoliza` en Contabilidad
+        - ✅ La columna correcta es `Factura`
         
-        **Tiempo estimado**:
-        - 350K liquidaciones: ~2-4 minutos
-        - Datasets pequeños: <30 segundos
+        **Solución**:
+        - ✅ Usa las MISMAS columnas que el script anterior
+        - ✅ Replica la lógica de merge exacto por 5 campos
+        - ✅ Matching idéntico al script que funciona
+        
+        **Columnas usadas**:
+        - Liquidaciones: `Liquidacion, Numero_Viaje, TipoPago, Monto, Unidad`
+        - Contabilidad: `Factura, Referencia, TipoPago, Importe, Unidad`
         """)
     
     if not procesar_btn:
@@ -1038,123 +377,118 @@ def main():
         st.error("❌ Debes cargar el archivo de Contabilidad.")
         return
     
+    if liq_file is None:
+        st.warning("⚠️ No cargaste Liquidaciones. Solo se procesará Contabilidad.")
+    
     inicio = datetime.now()
     
     try:
-        preparador = PreparadorDatos(config)
-        motor = MotorMatchingOptimizado(config)  # Versión optimizada
-        deduplicador = DeduplicadorCostos(config)
-        analizador_dh = AnalizadorDH()
         archivos = ManejadorArchivos()
+        motor = MotorMatchingLiquidaciones(config)
+        prep_liq = PreparadorLiquidaciones(config)
+        prep_cont = PreparadorContabilidad(config)
         
         resultados = {}
         
         # PASO 1: Contabilidad
         st.header("📊 1. Procesando Contabilidad")
         
-        cont_raw = archivos.leer_tabla(cont_file, sheet_name='ContabilidadSET_PLUS_datos')
-        cont_d, col_map_cont = preparador.preparar_contabilidad(cont_raw, tipo_mov='D')
-        cont_h, _ = preparador.preparar_contabilidad(cont_raw, tipo_mov='H')
-        cont_completa, _ = preparador.preparar_contabilidad(cont_raw, tipo_mov=None)
+        # Leer con columnas específicas (IGUAL que script anterior)
+        cont_usecols = ["Factura", "Referencia", "TipoPago", "Importe", "Unidad", "NombreCuentaContable", "TipoMovimiento"]
         
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Movimientos D", f"{len(cont_d):,}")
-        col2.metric("Movimientos H", f"{len(cont_h):,}")
-        col3.metric("Total movimientos", f"{len(cont_completa):,}")
+        cont_raw = archivos.leer_tabla(
+            cont_file, 
+            sheet_name='ContabilidadSET_PLUS_datos',
+            usecols=cont_usecols
+        )
         
-        resultados['Contabilidad_D'] = cont_d
+        st.info(f"Contabilidad cargada: {len(cont_raw):,} registros")
+        
+        cont_h = prep_cont.preparar(cont_raw, tipo_mov='H')
+        cont_d = prep_cont.preparar(cont_raw, tipo_mov='D')
+        
+        col1, col2 = st.columns(2)
+        col1.metric("Movimientos H", f"{len(cont_h):,}")
+        col2.metric("Movimientos D", f"{len(cont_d):,}")
+        
         resultados['Contabilidad_H'] = cont_h
-        resultados['Contabilidad_Completa'] = cont_completa
+        resultados['Contabilidad_D'] = cont_d
         
-        # PASO 2: INGRESOS
+        # PASO 2: LIQUIDACIONES (si se cargó)
         if liq_file:
             st.header("📈 2. Procesando Liquidaciones (Ingresos)")
             
-            liq_raw = archivos.leer_tabla(liq_file, sheet_name='LiquidacionesSET_PLUS_datos')
-            liquidaciones = preparador.preparar_liquidaciones(liq_raw, tipo_concepto='E')
+            # Leer con columnas específicas
+            liq_usecols = ["Liquidacion", "Numero_Viaje", "TipoPago", "Monto", "Unidad", "Owner", "Tipo_Concepto"]
             
-            st.info(f"Liquidaciones: {len(liquidaciones):,} registros")
+            liq_raw = archivos.leer_tabla(
+                liq_file,
+                sheet_name='LiquidacionesSET_PLUS_datos',
+                usecols=liq_usecols
+            )
             
-            liq_clas, cont_liq_clas, matches_liq = motor.match_liquidaciones_vs_contabilidad(liquidaciones, cont_h)
+            st.info(f"Liquidaciones cargadas: {len(liq_raw):,} registros")
             
-            col1, col2, col3 = st.columns(3)
-            col1.metric("✅ MATCH_OK", f"{(liq_clas['ESTATUS_MATCH'] == 'MATCH_OK').sum():,}")
-            col2.metric("⚠️ DISCREPANCIA", f"{(liq_clas['ESTATUS_MATCH'] == 'MATCH_CON_DISCREPANCIA').sum():,}")
-            col3.metric("❌ NO MATCH", f"{(liq_clas['ESTATUS_MATCH'] == 'NO_EXISTE_EN_CONTABILIDAD_H').sum():,}")
+            liq_filtrado = prep_liq.preparar(liq_raw, tipo_concepto=tipo_concepto)
             
-            resultados['Liquidaciones_Clasificadas'] = liq_clas
-            resultados['Contabilidad_vs_Liquidaciones'] = cont_liq_clas
-            resultados['Detalle_Matches_Liquidaciones'] = matches_liq
-        
-        # PASO 3: BASE SALDOS
-        if base_file:
-            st.header("📋 3. Procesando Base Saldos")
+            st.info(f"Liquidaciones filtradas (Tipo={tipo_concepto}): {len(liq_filtrado):,} registros")
             
-            base_raw = archivos.leer_tabla(base_file)
-            base = preparador.preparar_base_saldos(base_raw)
+            # MATCHING
+            liq_clasificado, cont_clasificado = motor.match_liquidaciones_vs_contabilidad(
+                liq_filtrado, 
+                cont_h
+            )
             
-            st.info(f"Base Saldos: {len(base):,} registros")
-            
-            base_clas, cont_base_clas, matches_base = motor.match_base_vs_contabilidad(base, cont_d)
-            
-            col1, col2, col3 = st.columns(3)
-            col1.metric("✅ MATCH_OK", f"{(base_clas['ESTATUS_MATCH'] == 'MATCH_OK').sum():,}")
-            col2.metric("⚠️ DISCREPANCIA", f"{(base_clas['ESTATUS_MATCH'] == 'MATCH_CON_DISCREPANCIA').sum():,}")
-            col3.metric("❌ NO MATCH", f"{(base_clas['ESTATUS_MATCH'] == 'NO_EXISTE_EN_CONTABILIDAD_D').sum():,}")
-            
-            resultados['Base_Clasificada'] = base_clas
-            resultados['Contabilidad_vs_Base'] = cont_base_clas
-            resultados['Detalle_Matches_Base'] = matches_base
-        
-        # PASO 4: CHEQUES Y VOUCHERS
-        if cheques_file and vouchers_file:
-            st.header("💵 4. Procesando Cheques y Vouchers")
-            
-            cheques_raw = archivos.leer_tabla(cheques_file)
-            vouchers_raw = archivos.leer_tabla(vouchers_file)
-            
-            cheques, cheques_excl = preparador.preparar_cheques(cheques_raw)
-            vouchers, vouchers_excl = preparador.preparar_vouchers(vouchers_raw)
-            
-            st.info(f"Cheques válidos: {len(cheques):,} | Excluidos (Company): {len(cheques_excl):,}")
-            st.info(f"Vouchers válidos: {len(vouchers):,} | Excluidos (Filial): {len(vouchers_excl):,}")
-            
-            costos_depurados, duplicados = deduplicador.deduplicate(cheques, vouchers)
-            
-            costos_clas, cont_costos_clas, matches_costos = motor.match_costos_vs_contabilidad(costos_depurados, cont_d)
-            
+            # Métricas
             col1, col2, col3, col4 = st.columns(4)
-            col1.metric("🧹 Depurados", f"{len(costos_depurados):,}")
-            col2.metric("✅ MATCH_OK", f"{(costos_clas['ESTATUS_MATCH'] == 'MATCH_OK').sum():,}")
-            col3.metric("⚠️ DISCREPANCIA", f"{(costos_clas['ESTATUS_MATCH'] == 'MATCH_CON_DISCREPANCIA').sum():,}")
-            col4.metric("❌ NO MATCH", f"{(costos_clas['ESTATUS_MATCH'] == 'NO_EXISTE_EN_CONTABILIDAD_D').sum():,}")
             
-            resultados['Cheques_Excluidos'] = cheques_excl
-            resultados['Vouchers_Excluidos'] = vouchers_excl
-            resultados['Costos_Depurados'] = costos_depurados
-            resultados['Duplicados'] = duplicados
-            resultados['Costos_Clasificados'] = costos_clas
-            resultados['Contabilidad_vs_Costos'] = cont_costos_clas
-            resultados['Detalle_Matches_Costos'] = matches_costos
-        
-        # PASO 5: ANÁLISIS D vs H
-        st.header("⚖️ 5. Análisis de Saldos D vs H")
-        
-        saldos_dh = analizador_dh.calcular_saldos(cont_completa)
-        
-        if not saldos_dh.empty:
-            col1, col2, col3 = st.columns(3)
-            col1.metric("✅ Saldados", f"{(saldos_dh['ESTATUS_DH'] == 'SALDADO').sum():,}")
-            col2.metric("⏳ Pendientes", f"{(saldos_dh['ESTATUS_DH'] == 'PENDIENTE_PAGO').sum():,}")
-            col3.metric("⚠️ Sobrepagos", f"{(saldos_dh['ESTATUS_DH'] == 'SOBREPAGO').sum():,}")
+            match_ok = (liq_clasificado['ESTATUS_MATCH'] == 'MATCH_OK').sum()
+            match_disc = (liq_clasificado['ESTATUS_MATCH'] == 'MATCH_CON_DISCREPANCIA').sum()
+            no_match = (liq_clasificado['ESTATUS_MATCH'] == 'NO_EXISTE_EN_CONTABILIDAD').sum()
             
-            resultados['Analisis_DH'] = saldos_dh
+            col1.metric("Total Liquidaciones", f"{len(liq_clasificado):,}")
+            col2.metric("✅ MATCH_OK", f"{match_ok:,}")
+            col3.metric("⚠️ DISCREPANCIA", f"{match_disc:,}")
+            col4.metric("❌ NO MATCH", f"{no_match:,}")
+            
+            # Comparación con script anterior
+            st.divider()
+            st.subheader("📊 Comparación con Script Anterior")
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.markdown("**Script Anterior** (9___Saldos_Owner__5_.py)")
+                st.write(f"- MATCH_OK: 74,705")
+                st.write(f"- MATCH_CON_DISCREPANCIA: 62,748")
+                st.write(f"- NO_EXISTE: 221,692")
+                st.write(f"- **Total: 359,145**")
+            
+            with col2:
+                st.markdown("**Este Script** (v3.3)")
+                st.write(f"- MATCH_OK: {match_ok:,}")
+                st.write(f"- MATCH_CON_DISCREPANCIA: {match_disc:,}")
+                st.write(f"- NO_EXISTE: {no_match:,}")
+                st.write(f"- **Total: {len(liq_clasificado):,}**")
+            
+            # Validación
+            if abs(len(liq_clasificado) - 359145) < 10:
+                if abs(match_ok - 74705) < 100:
+                    st.success("✅ Los resultados coinciden con el script anterior!")
+                else:
+                    st.warning(f"⚠️ Hay diferencia en MATCH_OK: {abs(match_ok - 74705):,} registros")
+            else:
+                st.error(f"❌ Total de registros no coincide. Diferencia: {abs(len(liq_clasificado) - 359145):,}")
+            
+            resultados['Liquidaciones_Filtradas'] = liq_filtrado
+            resultados['Liquidaciones_Clasificadas'] = liq_clasificado
+            resultados['Contabilidad_H_Clasificada'] = cont_clasificado
         
         # EXPORTACIÓN
         st.divider()
         
         tiempo_total = (datetime.now() - inicio).total_seconds()
-        st.success(f"✅ Procesamiento completado en {tiempo_total:.1f} segundos ({tiempo_total/60:.1f} minutos)")
+        st.success(f"✅ Procesamiento completado en {tiempo_total:.1f} segundos")
         
         if resultados:
             excel_bytes = archivos.exportar_excel(resultados)
@@ -1162,7 +496,7 @@ def main():
             st.download_button(
                 label="📥 Descargar Resultado Completo (Excel)",
                 data=excel_bytes,
-                file_name=f"conciliacion_owner_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                file_name=f"conciliacion_owner_v33_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True
             )
