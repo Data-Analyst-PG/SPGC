@@ -1,18 +1,13 @@
 """
-Script para detectar casos donde el costo está registrado en un tráfico/unidad diferente
-entre Base Saldos y Contabilidad, pero con la misma póliza.
-
-Este script complementa el análisis de Saldos_Owner_Costos_v1 identificando:
-1. Casos NO_EXISTE_EN_CONTABILIDAD_D que tienen la misma póliza en Contabilidad
-2. Diferencias en Unidad y/o Viaje (tráfico)
-3. Posibles matches por importe exacto o similar
-4. Análisis de movimientos D/H cruzados
+Análisis de Cross-Match por Póliza - Versión Streamlit
+Detecta casos donde el costo está en un tráfico diferente
 """
 
 import pandas as pd
-import numpy as np
-from pathlib import Path
+import streamlit as st
+from io import BytesIO
 
+st.set_page_config(page_title="Análisis Cross-Match Pólizas", layout="wide")
 
 def normalizar_texto(texto):
     """Normaliza texto para comparaciones"""
@@ -29,73 +24,54 @@ def normalizar_importe(importe, decimales=2):
         return 0.0
 
 
-def analizar_crossmatch_polizas(archivo_base_saldos, archivo_contabilidad, archivo_reporte_actual=None):
+def analizar_crossmatch_polizas(df_base_no_existe, df_cont, decimales=2):
     """
     Analiza casos donde el costo está en un tráfico diferente pero con la misma póliza
-    
-    Args:
-        archivo_base_saldos: Archivo Excel con Base Saldos
-        archivo_contabilidad: Archivo Excel con Contabilidad
-        archivo_reporte_actual: Archivo Excel del reporte actual (opcional)
-    
-    Returns:
-        DataFrame con análisis de cross-matches
     """
     
-    print("Leyendo archivos...")
-    
-    # Leer Base Saldos
-    df_base = pd.read_excel(archivo_base_saldos)
-    
-    # Leer Contabilidad
-    df_cont = pd.read_excel(archivo_contabilidad, sheet_name='ContabilidadSET_PLUS_datos')
-    
-    # Si existe reporte actual, cargar solo los NO_EXISTE
-    if archivo_reporte_actual:
-        df_reporte = pd.read_excel(archivo_reporte_actual)
-        base_no_existe = df_reporte[df_reporte['ESTATUS_MATCH'] == 'NO_EXISTE_EN_CONTABILIDAD_D'].copy()
-    else:
-        base_no_existe = df_base.copy()
-    
-    print(f"Total de registros a analizar: {len(base_no_existe)}")
+    st.info(f"Analizando {len(df_base_no_existe):,} registros...")
     
     # Preparar datos de contabilidad
     df_cont_d = df_cont[df_cont['TipoMovimiento'].str.upper() == 'D'].copy()
     df_cont_h = df_cont[df_cont['TipoMovimiento'].str.upper() == 'H'].copy()
     
     # Crear índices para búsqueda rápida
-    print("Creando índices de búsqueda...")
+    progress_bar = st.progress(0)
+    st.text("Creando índices de búsqueda...")
     
     # Agrupar contabilidad D por póliza
-    cont_d_por_poliza = df_cont_d.groupby('ClavePoliza').agg({
-        'Unidad': lambda x: list(x),
-        'Referencia': lambda x: list(x),
-        'Importe': lambda x: list(x),
-        'NombreCuentaContable': lambda x: list(x),
-        'ConceptoDetalle': lambda x: list(x)
-    }).to_dict('index')
+    cont_d_por_poliza = {}
+    for _, row in df_cont_d.iterrows():
+        poliza = normalizar_texto(row.get('ClavePoliza', ''))
+        if poliza not in cont_d_por_poliza:
+            cont_d_por_poliza[poliza] = []
+        cont_d_por_poliza[poliza].append(row)
+    
+    progress_bar.progress(0.3)
     
     # Agrupar contabilidad H por póliza
-    cont_h_por_poliza = df_cont_h.groupby('ClavePoliza').agg({
-        'Unidad': lambda x: list(x),
-        'Referencia': lambda x: list(x),
-        'Importe': lambda x: list(x),
-        'NombreCuentaContable': lambda x: list(x),
-        'ConceptoDetalle': lambda x: list(x)
-    }).to_dict('index')
+    cont_h_por_poliza = {}
+    for _, row in df_cont_h.iterrows():
+        poliza = normalizar_texto(row.get('ClavePoliza', ''))
+        if poliza not in cont_h_por_poliza:
+            cont_h_por_poliza[poliza] = []
+        cont_h_por_poliza[poliza].append(row)
+    
+    progress_bar.progress(0.5)
     
     # Análisis de cross-matches
-    print("Analizando cross-matches...")
+    st.text("Analizando cross-matches...")
     resultados = []
     
-    for idx, row in base_no_existe.iterrows():
-        if idx % 1000 == 0:
-            print(f"Procesando registro {idx}/{len(base_no_existe)}...")
+    total = len(df_base_no_existe)
+    for idx, row in df_base_no_existe.iterrows():
+        if len(resultados) % 1000 == 0:
+            progress_bar.progress(0.5 + (len(resultados) / total * 0.5))
         
-        poliza = row.get('FOLIO_CONTRARECIBO', '')
+        poliza = normalizar_texto(row.get('FOLIO_CONTRARECIBO', ''))
         unidad_base = normalizar_texto(row.get('NUMERO_UNIDAD', ''))
         viaje_base = normalizar_texto(row.get('NUMERO_VIAJE', ''))
-        importe_base = normalizar_importe(row.get('Importe', 0))
+        importe_base = normalizar_importe(row.get('Importe', 0), decimales)
         concepto_base = normalizar_texto(row.get('Concepto contabilidad', ''))
         
         resultado = {
@@ -109,7 +85,6 @@ def analizar_crossmatch_polizas(archivo_base_saldos, archivo_contabilidad, archi
             'MATCH_IMPORTE_EXACTO_D': False,
             'MATCH_IMPORTE_SIMILAR_D': False,
             'MATCH_IMPORTE_EXACTO_H': False,
-            'MATCH_IMPORTE_SIMILAR_H': False,
             'CONT_D_UNIDADES': '',
             'CONT_D_VIAJES': '',
             'CONT_D_IMPORTES': '',
@@ -117,7 +92,6 @@ def analizar_crossmatch_polizas(archivo_base_saldos, archivo_contabilidad, archi
             'CONT_H_UNIDADES': '',
             'CONT_H_VIAJES': '',
             'CONT_H_IMPORTES': '',
-            'CONT_H_OWNERS': '',
             'TIPO_CASO': '',
             'OBSERVACIONES': ''
         }
@@ -125,178 +99,302 @@ def analizar_crossmatch_polizas(archivo_base_saldos, archivo_contabilidad, archi
         # Buscar en movimientos D
         if poliza in cont_d_por_poliza:
             resultado['TIENE_POLIZA_EN_CONT_D'] = True
-            datos_d = cont_d_por_poliza[poliza]
+            movs_d = cont_d_por_poliza[poliza]
             
-            resultado['CONT_D_UNIDADES'] = ', '.join([str(u) for u in set(datos_d['Unidad']) if pd.notna(u)])
-            resultado['CONT_D_VIAJES'] = ', '.join([str(v) for v in set(datos_d['Referencia']) if pd.notna(v)])
-            resultado['CONT_D_IMPORTES'] = ', '.join([str(round(i, 2)) for i in datos_d['Importe'] if pd.notna(i)])
-            resultado['CONT_D_OWNERS'] = ', '.join([str(o) for o in set(datos_d['NombreCuentaContable']) if pd.notna(o)])
+            unidades = set()
+            viajes = set()
+            importes = []
+            owners = set()
+            
+            for mov in movs_d:
+                unidades.add(normalizar_texto(mov.get('Unidad', '')))
+                viajes.add(normalizar_texto(mov.get('Referencia', '')))
+                imp = normalizar_importe(mov.get('Importe', 0), decimales)
+                if imp > 0:
+                    importes.append(imp)
+                owners.add(normalizar_texto(mov.get('NombreCuentaContable', '')))
+            
+            resultado['CONT_D_UNIDADES'] = ', '.join([u for u in unidades if u])[:100]
+            resultado['CONT_D_VIAJES'] = ', '.join([v for v in viajes if v])[:100]
+            resultado['CONT_D_IMPORTES'] = ', '.join([str(i) for i in importes[:5]])
+            resultado['CONT_D_OWNERS'] = ', '.join([o for o in owners if o])[:100]
             
             # Verificar match de importe
-            importes_d = [normalizar_importe(i) for i in datos_d['Importe'] if pd.notna(i)]
-            
-            if importe_base in importes_d:
-                resultado['MATCH_IMPORTE_EXACTO_D'] = True
-            
-            # Match similar (diferencia < 1%)
-            for imp_d in importes_d:
-                if imp_d > 0 and abs(importe_base - imp_d) / imp_d < 0.01:
-                    resultado['MATCH_IMPORTE_SIMILAR_D'] = True
+            for imp_d in importes:
+                if abs(importe_base - imp_d) < 0.01:  # Match exacto
+                    resultado['MATCH_IMPORTE_EXACTO_D'] = True
                     break
+                elif imp_d > 0 and abs(importe_base - imp_d) / imp_d < 0.01:  # Match similar
+                    resultado['MATCH_IMPORTE_SIMILAR_D'] = True
         
         # Buscar en movimientos H
         if poliza in cont_h_por_poliza:
             resultado['TIENE_POLIZA_EN_CONT_H'] = True
-            datos_h = cont_h_por_poliza[poliza]
+            movs_h = cont_h_por_poliza[poliza]
             
-            resultado['CONT_H_UNIDADES'] = ', '.join([str(u) for u in set(datos_h['Unidad']) if pd.notna(u)])
-            resultado['CONT_H_VIAJES'] = ', '.join([str(v) for v in set(datos_h['Referencia']) if pd.notna(v)])
-            resultado['CONT_H_IMPORTES'] = ', '.join([str(round(i, 2)) for i in datos_h['Importe'] if pd.notna(i)])
-            resultado['CONT_H_OWNERS'] = ', '.join([str(o) for o in set(datos_h['NombreCuentaContable']) if pd.notna(o)])
+            unidades_h = set()
+            viajes_h = set()
+            importes_h = []
+            
+            for mov in movs_h:
+                unidades_h.add(normalizar_texto(mov.get('Unidad', '')))
+                viajes_h.add(normalizar_texto(mov.get('Referencia', '')))
+                imp = normalizar_importe(mov.get('Importe', 0), decimales)
+                if imp > 0:
+                    importes_h.append(imp)
+            
+            resultado['CONT_H_UNIDADES'] = ', '.join([u for u in unidades_h if u])[:100]
+            resultado['CONT_H_VIAJES'] = ', '.join([v for v in viajes_h if v])[:100]
+            resultado['CONT_H_IMPORTES'] = ', '.join([str(i) for i in importes_h[:5]])
             
             # Verificar match de importe en H
-            importes_h = [normalizar_importe(i) for i in datos_h['Importe'] if pd.notna(i)]
-            
-            if importe_base in importes_h:
-                resultado['MATCH_IMPORTE_EXACTO_H'] = True
-            
-            # Match similar
             for imp_h in importes_h:
-                if imp_h > 0 and abs(importe_base - imp_h) / imp_h < 0.01:
-                    resultado['MATCH_IMPORTE_SIMILAR_H'] = True
+                if abs(importe_base - imp_h) < 0.01:
+                    resultado['MATCH_IMPORTE_EXACTO_H'] = True
                     break
         
         # Clasificar tipo de caso
-        if resultado['TIENE_POLIZA_EN_CONT_D'] and resultado['MATCH_IMPORTE_EXACTO_D']:
-            resultado['TIPO_CASO'] = 'COSTO_EN_TRAFICO_DIFERENTE_D'
-            resultado['OBSERVACIONES'] = 'Mismo importe en Cont D pero diferente unidad/viaje'
-        elif resultado['TIENE_POLIZA_EN_CONT_D'] and resultado['MATCH_IMPORTE_SIMILAR_D']:
-            resultado['TIPO_CASO'] = 'COSTO_EN_TRAFICO_DIFERENTE_D_SIMILAR'
-            resultado['OBSERVACIONES'] = 'Importe similar en Cont D pero diferente unidad/viaje'
-        elif resultado['TIENE_POLIZA_EN_CONT_H'] and resultado['MATCH_IMPORTE_EXACTO_H']:
+        if resultado['MATCH_IMPORTE_EXACTO_D']:
+            resultado['TIPO_CASO'] = 'TRAFICO_DIFERENTE_MATCH_EXACTO'
+            resultado['OBSERVACIONES'] = 'Mismo importe en Cont D, diferente unidad/viaje'
+        elif resultado['MATCH_IMPORTE_SIMILAR_D']:
+            resultado['TIPO_CASO'] = 'TRAFICO_DIFERENTE_MATCH_SIMILAR'
+            resultado['OBSERVACIONES'] = 'Importe similar en Cont D, diferente unidad/viaje'
+        elif resultado['MATCH_IMPORTE_EXACTO_H']:
             resultado['TIPO_CASO'] = 'COSTO_EN_MOVIMIENTO_H'
-            resultado['OBSERVACIONES'] = 'El costo está en movimiento H (abono) en vez de D (cargo)'
-        elif resultado['TIENE_POLIZA_EN_CONT_H'] and resultado['MATCH_IMPORTE_SIMILAR_H']:
-            resultado['TIPO_CASO'] = 'COSTO_EN_MOVIMIENTO_H_SIMILAR'
-            resultado['OBSERVACIONES'] = 'Importe similar en movimiento H en vez de D'
+            resultado['OBSERVACIONES'] = 'Costo en mov H en vez de D'
         elif resultado['TIENE_POLIZA_EN_CONT_D']:
-            resultado['TIPO_CASO'] = 'POLIZA_EXISTE_SIN_MATCH_IMPORTE_D'
-            resultado['OBSERVACIONES'] = 'Póliza existe en Cont D pero sin match de importe'
+            resultado['TIPO_CASO'] = 'POLIZA_SIN_MATCH_IMPORTE'
+            resultado['OBSERVACIONES'] = 'Póliza existe sin match de importe'
         elif resultado['TIENE_POLIZA_EN_CONT_H']:
             resultado['TIPO_CASO'] = 'POLIZA_SOLO_EN_H'
             resultado['OBSERVACIONES'] = 'Póliza solo tiene movimientos H'
         else:
             resultado['TIPO_CASO'] = 'NO_ENCONTRADO'
-            resultado['OBSERVACIONES'] = 'Póliza no encontrada en Contabilidad'
+            resultado['OBSERVACIONES'] = 'Póliza no encontrada'
         
         resultados.append(resultado)
+    
+    progress_bar.progress(1.0)
     
     # Crear DataFrame con resultados
     df_resultado = pd.DataFrame(resultados)
     
-    # Unir con datos originales de base_no_existe
-    df_resultado = pd.concat([
-        base_no_existe.reset_index(drop=True),
+    # Unir con datos originales
+    df_final = pd.concat([
+        df_base_no_existe.reset_index(drop=True),
         df_resultado.reset_index(drop=True)
     ], axis=1)
     
-    # Estadísticas
-    print("\n" + "="*80)
-    print("RESUMEN DE ANÁLISIS")
-    print("="*80)
-    print(f"\nTotal de registros analizados: {len(df_resultado)}")
-    print(f"\nDistribución por tipo de caso:")
-    print(df_resultado['TIPO_CASO'].value_counts())
-    
-    return df_resultado
+    return df_final
 
 
-def generar_reporte_excel(df_analisis, archivo_salida):
-    """Genera un reporte en Excel con múltiples hojas"""
+def generar_excel(df_analisis):
+    """Genera archivo Excel con múltiples hojas"""
     
-    print(f"\nGenerando reporte en: {archivo_salida}")
+    output = BytesIO()
     
-    with pd.ExcelWriter(archivo_salida, engine='xlsxwriter') as writer:
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         # Hoja 1: Análisis completo
         df_analisis.to_excel(writer, sheet_name='Analisis_Completo', index=False)
         
         # Hoja 2: Casos con costo en tráfico diferente
-        casos_trafico_diff = df_analisis[
+        casos_trafico = df_analisis[
             df_analisis['TIPO_CASO'].isin([
-                'COSTO_EN_TRAFICO_DIFERENTE_D',
-                'COSTO_EN_TRAFICO_DIFERENTE_D_SIMILAR'
+                'TRAFICO_DIFERENTE_MATCH_EXACTO',
+                'TRAFICO_DIFERENTE_MATCH_SIMILAR'
             ])
         ]
-        casos_trafico_diff.to_excel(writer, sheet_name='Costo_Trafico_Diferente', index=False)
+        casos_trafico.to_excel(writer, sheet_name='Trafico_Diferente', index=False)
         
-        # Hoja 3: Casos con costo en movimiento H
-        casos_mov_h = df_analisis[
-            df_analisis['TIPO_CASO'].isin([
-                'COSTO_EN_MOVIMIENTO_H',
-                'COSTO_EN_MOVIMIENTO_H_SIMILAR'
-            ])
-        ]
-        casos_mov_h.to_excel(writer, sheet_name='Costo_en_Mov_H', index=False)
+        # Hoja 3: Casos con costo en H
+        casos_h = df_analisis[df_analisis['TIPO_CASO'] == 'COSTO_EN_MOVIMIENTO_H']
+        casos_h.to_excel(writer, sheet_name='Costo_en_H', index=False)
         
-        # Hoja 4: Casos sin match de importe
-        casos_sin_match = df_analisis[
-            df_analisis['TIPO_CASO'] == 'POLIZA_EXISTE_SIN_MATCH_IMPORTE_D'
-        ]
+        # Hoja 4: Sin match de importe
+        casos_sin_match = df_analisis[df_analisis['TIPO_CASO'] == 'POLIZA_SIN_MATCH_IMPORTE']
         casos_sin_match.to_excel(writer, sheet_name='Sin_Match_Importe', index=False)
         
-        # Hoja 5: Resumen estadístico
+        # Hoja 5: Resumen
         resumen = pd.DataFrame({
             'Tipo_Caso': df_analisis['TIPO_CASO'].value_counts().index,
             'Cantidad': df_analisis['TIPO_CASO'].value_counts().values,
             'Porcentaje': (df_analisis['TIPO_CASO'].value_counts().values / len(df_analisis) * 100).round(2)
         })
         resumen.to_excel(writer, sheet_name='Resumen', index=False)
-        
-        # Formatear
-        workbook = writer.book
-        
-        # Formato para encabezados
-        header_format = workbook.add_format({
-            'bold': True,
-            'bg_color': '#4472C4',
-            'font_color': 'white',
-            'border': 1
-        })
-        
-        # Formato para casos de tráfico diferente
-        format_trafico = workbook.add_format({
-            'bg_color': '#FFEB9C',
-            'border': 1
-        })
-        
-        # Formato para casos en movimiento H
-        format_mov_h = workbook.add_format({
-            'bg_color': '#C6E0B4',
-            'border': 1
-        })
     
-    print("Reporte generado exitosamente!")
-    print(f"\nCasos encontrados:")
-    print(f"  - Costo en tráfico diferente (D): {len(casos_trafico_diff)}")
-    print(f"  - Costo en movimiento H: {len(casos_mov_h)}")
-    print(f"  - Sin match de importe: {len(casos_sin_match)}")
+    output.seek(0)
+    return output
 
 
-if __name__ == "__main__":
-    # Rutas de archivos
-    archivo_base = "/mnt/user-data/uploads/Base_Saldos_corregida_v3.xlsx"
-    archivo_cont = "/mnt/user-data/uploads/ContabilidadSET_PLUS_datos.xlsx"
-    archivo_reporte = "/mnt/user-data/uploads/2026-04-29T20-39_BASESALDOSVSCONTA.xlsx"
-    archivo_salida = "/home/claude/Analisis_CrossMatch_Polizas.xlsx"
+# ============================================================
+# UI de Streamlit
+# ============================================================
+
+st.title("🔍 Análisis Cross-Match por Póliza")
+st.caption("Detecta costos registrados en tráficos diferentes")
+
+st.markdown("""
+Este análisis identifica casos donde:
+- El costo está en **Contabilidad** pero en una **unidad/viaje diferente**
+- El **importe coincide** (exacto o similar)
+- La **póliza es la misma**
+""")
+
+with st.sidebar:
+    st.header("📁 Cargar Archivos")
     
-    # Ejecutar análisis
-    df_resultado = analizar_crossmatch_polizas(
-        archivo_base_saldos=archivo_base,
-        archivo_contabilidad=archivo_cont,
-        archivo_reporte_actual=archivo_reporte
+    # Opción 1: Cargar reporte existente
+    st.subheader("Opción 1: Desde Reporte Existente")
+    reporte_file = st.file_uploader(
+        "Reporte BASESALDOSVSCONTA.xlsx",
+        type=['xlsx', 'xls'],
+        key='reporte',
+        help="El reporte generado por Saldos_Owner_Costos"
+    )
+    cont_file = st.file_uploader(
+        "ContabilidadSET_PLUS_datos.xlsx",
+        type=['xlsx', 'xls'],
+        key='cont',
+        help="Archivo de contabilidad completo"
     )
     
-    # Generar reporte
-    generar_reporte_excel(df_resultado, archivo_salida)
+    st.divider()
     
-    print("\n¡Análisis completado!")
+    # Opción 2: Cargar archivos base
+    st.subheader("Opción 2: Desde Archivos Base")
+    base_file = st.file_uploader(
+        "Base Saldos corregida.xlsx",
+        type=['xlsx', 'xls'],
+        key='base'
+    )
+    cont_file2 = st.file_uploader(
+        "Contabilidad.xlsx",
+        type=['xlsx', 'xls'],
+        key='cont2'
+    )
+    
+    st.divider()
+    decimales = st.number_input("Decimales para comparación", 0, 4, 2)
+    
+    analizar_btn = st.button("🚀 Analizar", type="primary", use_container_width=True)
+
+if not analizar_btn:
+    st.info("👈 Carga los archivos y haz clic en 'Analizar'")
+    st.stop()
+
+# Determinar qué opción usar
+usar_reporte = reporte_file is not None and cont_file is not None
+usar_base = base_file is not None and cont_file2 is not None
+
+if not usar_reporte and not usar_base:
+    st.error("Debes cargar archivos usando la Opción 1 o la Opción 2")
+    st.stop()
+
+try:
+    # Leer archivos según la opción elegida
+    if usar_reporte:
+        st.info("Usando Opción 1: Reporte existente")
+        df_reporte = pd.read_excel(reporte_file)
+        df_cont = pd.read_excel(cont_file, sheet_name='ContabilidadSET_PLUS_datos')
+        
+        # Filtrar solo NO_EXISTE
+        if 'ESTATUS_MATCH' not in df_reporte.columns:
+            st.error("El reporte no tiene la columna ESTATUS_MATCH")
+            st.stop()
+        
+        df_no_existe = df_reporte[df_reporte['ESTATUS_MATCH'] == 'NO_EXISTE_EN_CONTABILIDAD_D'].copy()
+        
+    else:  # usar_base
+        st.info("Usando Opción 2: Archivos base")
+        df_no_existe = pd.read_excel(base_file)
+        df_cont = pd.read_excel(cont_file2, sheet_name='ContabilidadSET_PLUS_datos')
+    
+    st.success(f"✅ Archivos cargados correctamente")
+    st.write(f"- Registros a analizar: **{len(df_no_existe):,}**")
+    st.write(f"- Registros en Contabilidad: **{len(df_cont):,}**")
+    
+    # Ejecutar análisis
+    with st.spinner("Analizando..."):
+        df_resultado = analizar_crossmatch_polizas(df_no_existe, df_cont, decimales)
+    
+    # Mostrar resultados
+    st.divider()
+    st.header("📊 Resultados del Análisis")
+    
+    # Métricas
+    col1, col2, col3, col4 = st.columns(4)
+    
+    total = len(df_resultado)
+    trafico_diff = len(df_resultado[df_resultado['TIPO_CASO'].isin([
+        'TRAFICO_DIFERENTE_MATCH_EXACTO',
+        'TRAFICO_DIFERENTE_MATCH_SIMILAR'
+    ])])
+    sin_match = len(df_resultado[df_resultado['TIPO_CASO'] == 'POLIZA_SIN_MATCH_IMPORTE'])
+    no_encontrado = len(df_resultado[df_resultado['TIPO_CASO'] == 'NO_ENCONTRADO'])
+    
+    col1.metric("Total Analizado", f"{total:,}")
+    col2.metric("Tráfico Diferente", f"{trafico_diff:,}", 
+                f"{trafico_diff/total*100:.1f}%")
+    col3.metric("Sin Match Importe", f"{sin_match:,}",
+                f"{sin_match/total*100:.1f}%")
+    col4.metric("No Encontrado", f"{no_encontrado:,}",
+                f"{no_encontrado/total*100:.1f}%")
+    
+    # Resumen por tipo
+    st.subheader("Distribución por Tipo de Caso")
+    resumen = df_resultado['TIPO_CASO'].value_counts().reset_index()
+    resumen.columns = ['Tipo de Caso', 'Cantidad']
+    resumen['Porcentaje'] = (resumen['Cantidad'] / total * 100).round(2)
+    st.dataframe(resumen, use_container_width=True, hide_index=True)
+    
+    # Tabs con resultados detallados
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "🎯 Tráfico Diferente",
+        "📋 Análisis Completo",
+        "❌ Sin Match Importe",
+        "💾 Descargar Excel"
+    ])
+    
+    with tab1:
+        st.write("Casos donde el costo SÍ existe pero en diferente unidad/viaje")
+        casos_trafico = df_resultado[df_resultado['TIPO_CASO'].isin([
+            'TRAFICO_DIFERENTE_MATCH_EXACTO',
+            'TRAFICO_DIFERENTE_MATCH_SIMILAR'
+        ])]
+        st.dataframe(casos_trafico, use_container_width=True, height=500)
+    
+    with tab2:
+        st.write("Todos los registros analizados con detalles de cross-match")
+        st.dataframe(df_resultado, use_container_width=True, height=500)
+    
+    with tab3:
+        st.write("Casos donde la póliza existe pero sin match de importe")
+        casos_sin = df_resultado[df_resultado['TIPO_CASO'] == 'POLIZA_SIN_MATCH_IMPORTE']
+        st.dataframe(casos_sin, use_container_width=True, height=500)
+    
+    with tab4:
+        st.write("Descarga el análisis completo en Excel con múltiples hojas")
+        
+        excel_data = generar_excel(df_resultado)
+        
+        st.download_button(
+            label="📥 Descargar Análisis Completo (Excel)",
+            data=excel_data,
+            file_name="Analisis_CrossMatch_Polizas.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True
+        )
+        
+        st.info("""
+        El archivo Excel contiene:
+        - **Analisis_Completo**: Todos los registros con análisis
+        - **Trafico_Diferente**: Casos con match de importe
+        - **Costo_en_H**: Casos en movimiento H
+        - **Sin_Match_Importe**: Sin match de importe
+        - **Resumen**: Estadísticas del análisis
+        """)
+
+except Exception as e:
+    st.error(f"Error al procesar: {str(e)}")
+    st.exception(e)
