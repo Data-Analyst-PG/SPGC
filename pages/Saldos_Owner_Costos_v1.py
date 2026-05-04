@@ -181,17 +181,17 @@ def prep_contabilidad(cont_raw: pd.DataFrame, ndigits: int, concept_map: dict[st
 
 
 def prep_base_saldos(base_raw: pd.DataFrame, ndigits: int, concept_map: dict[str, str]) -> pd.DataFrame:
-    c_poliza = resolve_col(base_raw, ["FOLIO_CONTRARRECIBO", "Contrarrecibo", "Clave Poliza", "Clave Póliza", "ClavePoliza", "Factura"])
-    c_unidad = resolve_col(base_raw, ["NUMERO_UNIDAD", "Unidad", "Numero de Unidad", "Numero_Unidad"])
-    c_viaje = resolve_col(base_raw, ["NUMERO_VIAJE", "Referencia", "Numero_Viaje", "Numero Viaje", "Viaje"], required=False)
-    c_concepto = resolve_col(base_raw, ["Tipo concepto", "Concepto contabilidad", "Concepto detalle", "Concepto Detalle", "Concepto", "NombreCuentaContable"], required=False)
-    c_importe = resolve_col(base_raw, ["Importe", "Total", "Monto"])
+    c_poliza = resolve_col(base_raw, ["folio_contrarecibo", "folio contrarecibo", "contrarecibo", "contrarrecibo"])
+    c_unidad = resolve_col(base_raw, ["numero de unidad", "numero_unidad", "unidad"])
+    c_viaje = resolve_col(base_raw, ["numero_viaje", "numero viaje", "referencia", "viaje"])
+    c_concepto = resolve_col(base_raw, ["concepto_contabilidad", "concepto contabilidad", "concepto"])
+    c_importe = resolve_col(base_raw, ["importe", "monto", "total"])
 
     out = base_raw.copy()
     out["POLIZA_KEY"] = out[c_poliza].apply(norm_for_key)
     out["UNIDAD_KEY"] = out[c_unidad].apply(norm_for_key)
-    out["VIAJE_KEY"] = out[c_viaje].apply(norm_for_key) if c_viaje else ""
-    out["CONCEPTO_KEY"] = out[c_concepto].apply(lambda x: canonical_concept(x, concept_map)) if c_concepto else ""
+    out["VIAJE_KEY"] = out[c_viaje].apply(norm_for_key)
+    out["CONCEPTO_KEY"] = out[c_concepto].apply(lambda x: canonical_concept(x, concept_map))
     out["IMPORTE_KEY"] = out[c_importe].apply(lambda x: norm_amount(x, ndigits))
     out["ROW_ID_BASE"] = range(1, len(out) + 1)
     return out
@@ -204,163 +204,232 @@ def prep_vales(vales_raw: pd.DataFrame, ndigits: int, concept_map: dict[str, str
     - Total (como importe)
     - Contrarecibo (como poliza/contrarrecibo)
     - Concepto
+    - Vale
     """
+    c_vale = resolve_col(vales_raw, ["Vale", "No Vale", "Numero Vale"])
     c_unidad = resolve_col(vales_raw, ["Unidad", "Numero de Unidad", "Numero_Unidad"])
+    c_concepto = resolve_col(vales_raw, ["Concepto", "Concepto detalle"])
+    c_contrarrecibo = resolve_col(vales_raw, ["Contrarecibo", "Contrarrecibo", "Clave Poliza"], required=False)
     c_importe = resolve_col(vales_raw, ["Total", "Importe", "TotalVale"])
-    c_contrarrecibo = resolve_col(vales_raw, ["Contrarecibo", "Contrarrecibo", "Clave Poliza"])
-    c_concepto = resolve_col(vales_raw, ["Concepto", "Concepto detalle"], required=False)
-    c_vale = resolve_col(vales_raw, ["Vale", "No Vale", "Numero Vale"], required=False)
 
     out = vales_raw.copy()
-    out["UNIDAD_KEY"] = out[c_unidad].apply(norm_for_key)
-    out["IMPORTE_KEY"] = out[c_importe].apply(lambda x: norm_amount(x, ndigits))
-    out["POLIZA_KEY"] = out[c_contrarrecibo].apply(norm_for_key)
-    out["CONCEPTO_KEY"] = out[c_concepto].apply(lambda x: canonical_concept(x, concept_map)) if c_concepto else ""
-    out["VALE_KEY"] = out[c_vale].apply(norm_for_key) if c_vale else ""
-    out["VIAJE_KEY"] = ""  # Los vales no tienen viaje
+    out["SOURCE"] = "VALES"
+    out["ROW_ID_ORIGEN"] = range(1, len(out) + 1)
     out["ROW_ID_VALE"] = range(1, len(out) + 1)
-    out["ORIGEN"] = "VALES"
+    out["VALE_KEY"] = out[c_vale].apply(norm_for_key)
+    out["UNIDAD_KEY"] = out[c_unidad].apply(norm_for_key)
+    out["CONCEPTO_KEY"] = out[c_concepto].apply(lambda x: canonical_concept(x, concept_map))
+    out["POLIZA_KEY"] = out[c_contrarrecibo].apply(norm_for_key) if c_contrarrecibo else ""
+    out["IMPORTE_KEY"] = out[c_importe].apply(lambda x: norm_amount(x, ndigits))
+    out["OBS_KEY"] = ""  # Los vales no tienen observaciones
+    out["VIAJE_KEY"] = ""  # Los vales no tienen viaje
     return out
+
+
+# ============================================================
+# Match por mayoria de criterios
+# ============================================================
+
+def _pairs_by_block(left: pd.DataFrame, right: pd.DataFrame, block_cols: list[str], left_id: str, right_id: str) -> pd.DataFrame:
+    l = left[[left_id] + block_cols].copy()
+    r = right[[right_id] + block_cols].copy()
+    for c in block_cols:
+        l = l[l[c].notna() & (l[c].astype(str) != "")]
+        r = r[r[c].notna() & (r[c].astype(str) != "")]
+    if l.empty or r.empty:
+        return pd.DataFrame(columns=[left_id, right_id])
+    p = l.merge(r, on=block_cols, how="inner")[[left_id, right_id]]
+    return p.drop_duplicates()
+
+
+def make_candidate_pairs(left: pd.DataFrame, right: pd.DataFrame, left_id: str, right_id: str, mode: str) -> pd.DataFrame:
+    if mode == "base":
+        blocks = [
+            ["POLIZA_KEY", "IMPORTE_KEY"],
+            ["POLIZA_KEY", "UNIDAD_KEY"],
+            ["UNIDAD_KEY", "VIAJE_KEY", "IMPORTE_KEY"],
+            ["POLIZA_KEY", "VIAJE_KEY"],
+            ["UNIDAD_KEY", "CONCEPTO_KEY", "IMPORTE_KEY"],
+        ]
+    else:  # mode == "vales"
+        blocks = [
+            ["UNIDAD_KEY", "CONCEPTO_KEY", "IMPORTE_KEY"],
+            ["UNIDAD_KEY", "IMPORTE_KEY"],
+            ["CONCEPTO_KEY", "IMPORTE_KEY"],
+            ["VALE_KEY", "IMPORTE_KEY"],
+            ["VALE_KEY", "UNIDAD_KEY"],
+            ["POLIZA_KEY", "IMPORTE_KEY"],
+            ["POLIZA_KEY", "UNIDAD_KEY"],
+        ]
+    pieces = [_pairs_by_block(left, right, b, left_id, right_id) for b in blocks]
+    pieces = [p for p in pieces if not p.empty]
+    if not pieces:
+        return pd.DataFrame(columns=[left_id, right_id])
+    return pd.concat(pieces, ignore_index=True).drop_duplicates()
+
+
+def score_pairs_base(base: pd.DataFrame, cont: pd.DataFrame, pairs: pd.DataFrame) -> pd.DataFrame:
+    if pairs.empty:
+        return pairs
+    b = base[["ROW_ID_BASE", "POLIZA_KEY", "UNIDAD_KEY", "VIAJE_KEY", "CONCEPTO_KEY", "IMPORTE_KEY"]]
+    c = cont[["ROW_ID_CONT", "POLIZA_KEY", "UNIDAD_KEY", "VIAJE_KEY", "CONCEPTO_KEY", "IMPORTE_KEY"]]
+    x = pairs.merge(b, on="ROW_ID_BASE", how="left").merge(c, on="ROW_ID_CONT", how="left", suffixes=("_BASE", "_CONT"))
+    x["COINCIDE_POLIZA"] = x["POLIZA_KEY_BASE"] == x["POLIZA_KEY_CONT"]
+    x["COINCIDE_UNIDAD"] = x["UNIDAD_KEY_BASE"] == x["UNIDAD_KEY_CONT"]
+    x["COINCIDE_VIAJE"] = x["VIAJE_KEY_BASE"] == x["VIAJE_KEY_CONT"]
+    x["COINCIDE_CONCEPTO"] = x["CONCEPTO_KEY_BASE"] == x["CONCEPTO_KEY_CONT"]
+    x["COINCIDE_IMPORTE"] = x["IMPORTE_KEY_BASE"] == x["IMPORTE_KEY_CONT"]
+    x["TOTAL_COINCIDENCIAS"] = (
+        x["COINCIDE_POLIZA"].astype(int)
+        + x["COINCIDE_UNIDAD"].astype(int)
+        + x["COINCIDE_VIAJE"].astype(int)
+        + x["COINCIDE_CONCEPTO"].astype(int)
+        + x["COINCIDE_IMPORTE"].astype(int)
+    )
+
+    def estatus(row):
+        if row["TOTAL_COINCIDENCIAS"] == 5:
+            return "MATCH_OK"
+        if row["TOTAL_COINCIDENCIAS"] >= 3:
+            return "MATCH_CON_DISCREPANCIA"
+        return "CANDIDATO_DEBIL"
+
+    x["ESTATUS_MATCH"] = x.apply(estatus, axis=1)
+    return x
+
+
+def score_pairs_vales(vales: pd.DataFrame, cont: pd.DataFrame, pairs: pd.DataFrame) -> pd.DataFrame:
+    if pairs.empty:
+        return pairs
+    lcols = ["ROW_ID_VALE", "VALE_KEY", "UNIDAD_KEY", "CONCEPTO_KEY", "POLIZA_KEY", "IMPORTE_KEY"]
+    rcols = ["ROW_ID_CONT", "VALE_KEY", "UNIDAD_KEY", "CONCEPTO_KEY", "POLIZA_KEY", "IMPORTE_KEY", "TIPO_MOV"]
+    x = pairs.merge(vales[lcols], on="ROW_ID_VALE", how="left").merge(cont[rcols], on="ROW_ID_CONT", how="left", suffixes=("_VALE", "_CONT"))
+
+    def has_value(v):
+        return pd.notna(v) and str(v).strip().upper() not in {"", "NULL", "NONE", "NAN"}
+
+    criteria = []
+    for name, lcol, rcol in [
+        ("VALE", "VALE_KEY_VALE", "VALE_KEY_CONT"),
+        ("UNIDAD", "UNIDAD_KEY_VALE", "UNIDAD_KEY_CONT"),
+        ("CONCEPTO", "CONCEPTO_KEY_VALE", "CONCEPTO_KEY_CONT"),
+        ("POLIZA", "POLIZA_KEY_VALE", "POLIZA_KEY_CONT"),
+        ("IMPORTE", "IMPORTE_KEY_VALE", "IMPORTE_KEY_CONT"),
+    ]:
+        eval_col = f"EVALUA_{name}"
+        ok_col = f"COINCIDE_{name}"
+        x[eval_col] = x.apply(lambda r: has_value(r.get(lcol)) and has_value(r.get(rcol)), axis=1)
+        x[ok_col] = x.apply(lambda r: bool(r[eval_col]) and r.get(lcol) == r.get(rcol), axis=1)
+        criteria.append((eval_col, ok_col))
+
+    eval_cols = [a for a, _ in criteria]
+    ok_cols = [b for _, b in criteria]
+    x["CRITERIOS_EVALUADOS"] = x[eval_cols].sum(axis=1).astype(int)
+    x["TOTAL_COINCIDENCIAS"] = x[ok_cols].sum(axis=1).astype(int)
+    x["PORCENTAJE_COINCIDENCIA"] = x.apply(lambda r: round(r["TOTAL_COINCIDENCIAS"] / r["CRITERIOS_EVALUADOS"], 4) if r["CRITERIOS_EVALUADOS"] else 0, axis=1)
+
+    def estatus(row):
+        if row["CRITERIOS_EVALUADOS"] >= 3 and row["TOTAL_COINCIDENCIAS"] == row["CRITERIOS_EVALUADOS"]:
+            return "MATCH_OK"
+        if row["TOTAL_COINCIDENCIAS"] >= 3:
+            return "MATCH_CON_DISCREPANCIA"
+        return "CANDIDATO_DEBIL"
+
+    x["ESTATUS_MATCH"] = x.apply(estatus, axis=1)
+    return x
+
+
+def greedy_best_match(scored: pd.DataFrame, left_id: str, right_id: str) -> pd.DataFrame:
+    if scored.empty:
+        return scored
+    candidates = scored[scored["TOTAL_COINCIDENCIAS"] >= 3].copy()
+    if candidates.empty:
+        return candidates
+    sort_cols = ["TOTAL_COINCIDENCIAS"]
+    ascending = [False]
+    if "CRITERIOS_EVALUADOS" in candidates.columns:
+        sort_cols.append("CRITERIOS_EVALUADOS")
+        ascending.append(False)
+    if "PORCENTAJE_COINCIDENCIA" in candidates.columns:
+        sort_cols.append("PORCENTAJE_COINCIDENCIA")
+        ascending.append(False)
+    sort_cols += [left_id, right_id]
+    ascending += [True, True]
+    candidates = candidates.sort_values(sort_cols, ascending=ascending)
+    used_left = set()
+    used_right = set()
+    rows = []
+    for _, row in candidates.iterrows():
+        lid = row[left_id]
+        rid = row[right_id]
+        if lid in used_left or rid in used_right:
+            continue
+        used_left.add(lid)
+        used_right.add(rid)
+        rows.append(row)
+    if not rows:
+        return candidates.iloc[0:0].copy()
+    return pd.DataFrame(rows)
 
 
 # ============================================================
 # Matching
 # ============================================================
 
-def score_match(
-    cand_poliza_key: str,
-    cand_unidad_key: str,
-    cand_viaje_key: str,
-    cand_concepto_key: str,
-    cand_importe_key: float,
-    ref_poliza_key: str,
-    ref_unidad_key: str,
-    ref_viaje_key: str,
-    ref_concepto_key: str,
-    ref_importe_key: float,
-) -> dict[str, object]:
-    """
-    Evalua 5 criterios: poliza, unidad, viaje, concepto, importe.
-    Devuelve dict con booleanos de coincidencia y score total.
-    """
-    coin_pol = bool(cand_poliza_key and ref_poliza_key and cand_poliza_key == ref_poliza_key)
-    coin_uni = bool(cand_unidad_key and ref_unidad_key and cand_unidad_key == ref_unidad_key)
-    coin_via = bool(cand_viaje_key and ref_viaje_key and cand_viaje_key == ref_viaje_key)
-    coin_con = bool(cand_concepto_key and ref_concepto_key and cand_concepto_key == ref_concepto_key)
-    coin_imp = False
-    if pd.notna(cand_importe_key) and pd.notna(ref_importe_key):
-        coin_imp = round(float(cand_importe_key), 2) == round(float(ref_importe_key), 2)
-    score = sum([coin_pol, coin_uni, coin_via, coin_con, coin_imp])
-    return {
-        "COINCIDE_POLIZA": coin_pol,
-        "COINCIDE_UNIDAD": coin_uni,
-        "COINCIDE_VIAJE": coin_via,
-        "COINCIDE_CONCEPTO": coin_con,
-        "COINCIDE_IMPORTE": coin_imp,
-        "TOTAL_COINCIDENCIAS": score,
-    }
-
-
 def match_base_vs_cont_mayoria(base: pd.DataFrame, cont_d: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """
-    Cruza Base Saldos vs Contabilidad D usando regla de mayoria: 5 criterios.
-    MATCH_OK si coinciden 5 de 5, MATCH_CON_DISCREPANCIA si 3 o 4, NO_EXISTE si <3.
-    """
-    if base.empty or cont_d.empty:
-        return base, cont_d, pd.DataFrame(), pd.DataFrame()
+    pairs = make_candidate_pairs(base, cont_d, "ROW_ID_BASE", "ROW_ID_CONT", mode="base")
+    scored = score_pairs_base(base, cont_d, pairs)
+    best = greedy_best_match(scored, "ROW_ID_BASE", "ROW_ID_CONT")
 
-    scored = []
-    for _, r in base.iterrows():
-        candidates = cont_d[
-            (cont_d["POLIZA_KEY"] == r["POLIZA_KEY"]) |
-            (cont_d["UNIDAD_KEY"] == r["UNIDAD_KEY"]) |
-            (cont_d["VIAJE_KEY"] == r["VIAJE_KEY"]) if r.get("VIAJE_KEY") else False |
-            (cont_d["CONCEPTO_KEY"] == r["CONCEPTO_KEY"]) if r.get("CONCEPTO_KEY") else False
-        ].copy()
-        if candidates.empty:
-            continue
-        for _, c in candidates.iterrows():
-            s = score_match(
-                c["POLIZA_KEY"], c["UNIDAD_KEY"], c["VIAJE_KEY"], c["CONCEPTO_KEY"], c["IMPORTE_KEY"],
-                r["POLIZA_KEY"], r["UNIDAD_KEY"], r.get("VIAJE_KEY", ""), r.get("CONCEPTO_KEY", ""), r["IMPORTE_KEY"],
-            )
-            if s["TOTAL_COINCIDENCIAS"] >= 3:
-                scored.append({"ROW_ID_BASE": r["ROW_ID_BASE"], "ROW_ID_CONT": c["ROW_ID_CONT"], **s})
-
-    if not scored:
-        base_clas = base.copy()
-        base_clas["ESTATUS_MATCH"] = "NO_EXISTE_EN_CONTABILIDAD_D"
-        base_clas["TOTAL_COINCIDENCIAS"] = 0
-        return base_clas, cont_d, pd.DataFrame(), pd.DataFrame()
-
-    scored_df = pd.DataFrame(scored)
-    best = scored_df.loc[scored_df.groupby("ROW_ID_BASE")["TOTAL_COINCIDENCIAS"].idxmax()].copy()
-    best["ESTATUS_MATCH"] = best["TOTAL_COINCIDENCIAS"].apply(lambda x: "MATCH_OK" if x == 5 else "MATCH_CON_DISCREPANCIA")
-
-    base_clas = base.merge(
-        best[["ROW_ID_BASE", "ROW_ID_CONT", "ESTATUS_MATCH", "TOTAL_COINCIDENCIAS", "COINCIDE_POLIZA", "COINCIDE_UNIDAD", "COINCIDE_VIAJE", "COINCIDE_CONCEPTO", "COINCIDE_IMPORTE"]],
-        on="ROW_ID_BASE",
-        how="left",
-    )
+    score_cols = ["COINCIDE_POLIZA", "COINCIDE_UNIDAD", "COINCIDE_VIAJE", "COINCIDE_CONCEPTO", "COINCIDE_IMPORTE", "TOTAL_COINCIDENCIAS", "ESTATUS_MATCH"]
+    base_status = best[["ROW_ID_BASE", "ROW_ID_CONT"] + score_cols].copy() if not best.empty else pd.DataFrame(columns=["ROW_ID_BASE", "ROW_ID_CONT"] + score_cols)
+    base_clas = base.merge(base_status, on="ROW_ID_BASE", how="left")
     base_clas["ESTATUS_MATCH"] = base_clas["ESTATUS_MATCH"].fillna("NO_EXISTE_EN_CONTABILIDAD_D")
     base_clas["TOTAL_COINCIDENCIAS"] = base_clas["TOTAL_COINCIDENCIAS"].fillna(0).astype(int)
 
-    cont_status = best[["ROW_ID_CONT", "ESTATUS_MATCH", "TOTAL_COINCIDENCIAS"]].copy()
+    cont_status = best[["ROW_ID_CONT", "ROW_ID_BASE"] + score_cols].copy() if not best.empty else pd.DataFrame(columns=["ROW_ID_CONT", "ROW_ID_BASE"] + score_cols)
     cont_clas = cont_d.merge(cont_status, on="ROW_ID_CONT", how="left")
     cont_clas["ESTATUS_MATCH"] = cont_clas["ESTATUS_MATCH"].fillna("NO_EXISTE_EN_BASE_SALDOS")
     cont_clas["TOTAL_COINCIDENCIAS"] = cont_clas["TOTAL_COINCIDENCIAS"].fillna(0).astype(int)
-    return base_clas, cont_clas, scored_df, best
+    return base_clas, cont_clas, scored, best
 
 
 def match_vales_vs_cont_mayoria(vales: pd.DataFrame, cont_d: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """
-    Cruza Vales vs Contabilidad D usando regla de mayoria: 5 criterios.
-    MATCH_OK si coinciden 5 de 5, MATCH_CON_DISCREPANCIA si 3 o 4, NO_EXISTE si <3.
-    """
-    if vales.empty or cont_d.empty:
-        return vales, cont_d, pd.DataFrame(), pd.DataFrame()
+    pairs = make_candidate_pairs(vales, cont_d, "ROW_ID_VALE", "ROW_ID_CONT", mode="vales")
+    scored = score_pairs_vales(vales, cont_d, pairs)
+    best = greedy_best_match(scored, "ROW_ID_VALE", "ROW_ID_CONT")
+    score_cols = [
+        "COINCIDE_VALE", "COINCIDE_UNIDAD", "COINCIDE_CONCEPTO", "COINCIDE_POLIZA", "COINCIDE_IMPORTE",
+        "EVALUA_VALE", "EVALUA_UNIDAD", "EVALUA_CONCEPTO", "EVALUA_POLIZA", "EVALUA_IMPORTE",
+        "CRITERIOS_EVALUADOS", "TOTAL_COINCIDENCIAS", "PORCENTAJE_COINCIDENCIA", "ESTATUS_MATCH",
+    ]
 
-    scored = []
-    for _, r in vales.iterrows():
-        candidates = cont_d[
-            (cont_d["POLIZA_KEY"] == r["POLIZA_KEY"]) |
-            (cont_d["UNIDAD_KEY"] == r["UNIDAD_KEY"]) |
-            (cont_d["CONCEPTO_KEY"] == r["CONCEPTO_KEY"]) if r.get("CONCEPTO_KEY") else False |
-            (cont_d["VALE_KEY"] == r["VALE_KEY"]) if r.get("VALE_KEY") else False
-        ].copy()
-        if candidates.empty:
-            continue
-        for _, c in candidates.iterrows():
-            s = score_match(
-                c["POLIZA_KEY"], c["UNIDAD_KEY"], c.get("VIAJE_KEY", ""), c["CONCEPTO_KEY"], c["IMPORTE_KEY"],
-                r["POLIZA_KEY"], r["UNIDAD_KEY"], r.get("VIAJE_KEY", ""), r.get("CONCEPTO_KEY", ""), r["IMPORTE_KEY"],
-            )
-            if s["TOTAL_COINCIDENCIAS"] >= 3:
-                scored.append({"ROW_ID_VALE": r["ROW_ID_VALE"], "ROW_ID_CONT": c["ROW_ID_CONT"], **s})
+    vale_status = best[["ROW_ID_VALE", "ROW_ID_CONT"] + [c for c in score_cols if c in best.columns]].copy() if not best.empty else pd.DataFrame(columns=["ROW_ID_VALE", "ROW_ID_CONT"] + score_cols)
+    cont_info_cols = ["ROW_ID_CONT", "TIPO_MOV", "POLIZA_KEY", "UNIDAD_KEY", "VALE_KEY", "CONCEPTO_KEY", "IMPORTE_KEY"]
+    cont_info = cont_d[[c for c in cont_info_cols if c in cont_d.columns]].copy()
+    cont_info = cont_info.rename(columns={
+        "TIPO_MOV": "CONT_TIPO_MOV",
+        "POLIZA_KEY": "CONT_POLIZA_KEY",
+        "UNIDAD_KEY": "CONT_UNIDAD_KEY",
+        "VALE_KEY": "CONT_VALE_KEY",
+        "CONCEPTO_KEY": "CONT_CONCEPTO_KEY",
+        "IMPORTE_KEY": "CONT_IMPORTE_KEY",
+    })
+    vale_status = vale_status.merge(cont_info, on="ROW_ID_CONT", how="left") if not vale_status.empty else vale_status
 
-    if not scored:
-        vales_clas = vales.copy()
-        vales_clas["ESTATUS_MATCH"] = "NO_EXISTE_EN_CONTABILIDAD_D"
-        vales_clas["TOTAL_COINCIDENCIAS"] = 0
-        return vales_clas, cont_d, pd.DataFrame(), pd.DataFrame()
-
-    scored_df = pd.DataFrame(scored)
-    best = scored_df.loc[scored_df.groupby("ROW_ID_VALE")["TOTAL_COINCIDENCIAS"].idxmax()].copy()
-    best["ESTATUS_MATCH"] = best["TOTAL_COINCIDENCIAS"].apply(lambda x: "MATCH_OK" if x == 5 else "MATCH_CON_DISCREPANCIA")
-
-    vales_clas = vales.merge(
-        best[["ROW_ID_VALE", "ROW_ID_CONT", "ESTATUS_MATCH", "TOTAL_COINCIDENCIAS", "COINCIDE_POLIZA", "COINCIDE_UNIDAD", "COINCIDE_VIAJE", "COINCIDE_CONCEPTO", "COINCIDE_IMPORTE"]],
-        on="ROW_ID_VALE",
-        how="left",
-    )
+    vales_clas = vales.merge(vale_status, on="ROW_ID_VALE", how="left")
     vales_clas["ESTATUS_MATCH"] = vales_clas["ESTATUS_MATCH"].fillna("NO_EXISTE_EN_CONTABILIDAD_D")
     vales_clas["TOTAL_COINCIDENCIAS"] = vales_clas["TOTAL_COINCIDENCIAS"].fillna(0).astype(int)
+    if "CRITERIOS_EVALUADOS" in vales_clas.columns:
+        vales_clas["CRITERIOS_EVALUADOS"] = vales_clas["CRITERIOS_EVALUADOS"].fillna(0).astype(int)
 
-    cont_status = best[["ROW_ID_CONT", "ESTATUS_MATCH", "TOTAL_COINCIDENCIAS"]].copy()
+    cont_status = best[["ROW_ID_CONT", "ROW_ID_VALE"] + [c for c in score_cols if c in best.columns]].copy() if not best.empty else pd.DataFrame(columns=["ROW_ID_CONT", "ROW_ID_VALE"] + score_cols)
     cont_clas = cont_d.merge(cont_status, on="ROW_ID_CONT", how="left")
     cont_clas["ESTATUS_MATCH"] = cont_clas["ESTATUS_MATCH"].fillna("NO_EXISTE_EN_VALES")
     cont_clas["TOTAL_COINCIDENCIAS"] = cont_clas["TOTAL_COINCIDENCIAS"].fillna(0).astype(int)
-    return vales_clas, cont_clas, scored_df, best
+    if "CRITERIOS_EVALUADOS" in cont_clas.columns:
+        cont_clas["CRITERIOS_EVALUADOS"] = cont_clas["CRITERIOS_EVALUADOS"].fillna(0).astype(int)
+    return vales_clas, cont_clas, scored, best
 
 
 def resumen_dh_contabilidad(cont_all: pd.DataFrame) -> pd.DataFrame:
