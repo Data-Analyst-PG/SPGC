@@ -296,6 +296,7 @@ def process_star2_single(df_raw: pd.DataFrame) -> pd.DataFrame:
 
     last_cuenta = None
     rows_to_drop = []
+    in_cuenta_block = False
 
     for idx, val in df[cuenta_col].astype(str).items():
         text = val.replace("\xa0", " ").strip()
@@ -304,6 +305,7 @@ def process_star2_single(df_raw: pd.DataFrame) -> pd.DataFrame:
         if m:
             last_cuenta = m.group(2).strip()
             rows_to_drop.append(idx)   # eliminamos la fila "Cuenta: ..."
+            in_cuenta_block = True
             continue
 
         # Por si alguna vez llega SIN "Cuenta:" pero con el código al inicio y sin otros datos
@@ -315,9 +317,19 @@ def process_star2_single(df_raw: pd.DataFrame) -> pd.DataFrame:
             if not other_has:
                 last_cuenta = text
                 rows_to_drop.append(idx)
+                in_cuenta_block = True
                 continue
 
-        if last_cuenta:
+        # Verificar si llegamos al Total (fin del bloque de cuenta)
+        if in_cuenta_block and "Fecha" in df.columns:
+            fecha_val = str(df.at[idx, "Fecha"]).replace("\xa0", " ").strip().lower()
+            if fecha_val == "total":
+                rows_to_drop.append(idx)  # eliminamos la fila "Total"
+                in_cuenta_block = False
+                last_cuenta = None  # resetear cuenta para el siguiente bloque
+                continue
+
+        if last_cuenta and in_cuenta_block:
             df.at[idx, "Cuenta"] = last_cuenta
 
     df = df.drop(index=rows_to_drop).reset_index(drop=True)
