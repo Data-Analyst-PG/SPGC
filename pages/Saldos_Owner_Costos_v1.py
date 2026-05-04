@@ -6,7 +6,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-st.set_page_config(page_title="Saldos Owner - Costos v2", layout="wide")
+st.set_page_config(page_title="Saldos Owner - Costos con Vales", layout="wide")
 
 # ============================================================
 # Helpers generales
@@ -181,276 +181,186 @@ def prep_contabilidad(cont_raw: pd.DataFrame, ndigits: int, concept_map: dict[st
 
 
 def prep_base_saldos(base_raw: pd.DataFrame, ndigits: int, concept_map: dict[str, str]) -> pd.DataFrame:
-    c_poliza = resolve_col(base_raw, ["folio_contrarecibo", "folio contrarecibo", "contrarecibo", "contrarrecibo"])
-    c_unidad = resolve_col(base_raw, ["numero de unidad", "numero_unidad", "unidad"])
-    c_viaje = resolve_col(base_raw, ["numero_viaje", "numero viaje", "referencia", "viaje"])
-    c_concepto = resolve_col(base_raw, ["concepto_contabilidad", "concepto contabilidad", "concepto"])
-    c_importe = resolve_col(base_raw, ["importe", "monto", "total"])
+    c_poliza = resolve_col(base_raw, ["Clave Poliza", "Clave Póliza", "ClavePoliza", "Contrarrecibo", "Factura"])
+    c_unidad = resolve_col(base_raw, ["Unidad", "Numero de Unidad", "Numero_Unidad"])
+    c_viaje = resolve_col(base_raw, ["Referencia", "Numero_Viaje", "Numero Viaje", "Viaje"], required=False)
+    c_concepto = resolve_col(base_raw, ["Concepto detalle", "Concepto Detalle", "Concepto", "NombreCuentaContable"], required=False)
+    c_importe = resolve_col(base_raw, ["Importe", "Total", "Monto"])
 
     out = base_raw.copy()
     out["POLIZA_KEY"] = out[c_poliza].apply(norm_for_key)
     out["UNIDAD_KEY"] = out[c_unidad].apply(norm_for_key)
-    out["VIAJE_KEY"] = out[c_viaje].apply(norm_for_key)
-    out["CONCEPTO_KEY"] = out[c_concepto].apply(lambda x: canonical_concept(x, concept_map))
+    out["VIAJE_KEY"] = out[c_viaje].apply(norm_for_key) if c_viaje else ""
+    out["CONCEPTO_KEY"] = out[c_concepto].apply(lambda x: canonical_concept(x, concept_map)) if c_concepto else ""
     out["IMPORTE_KEY"] = out[c_importe].apply(lambda x: norm_amount(x, ndigits))
     out["ROW_ID_BASE"] = range(1, len(out) + 1)
     return out
 
 
+def prep_vales(vales_raw: pd.DataFrame, ndigits: int, concept_map: dict[str, str]) -> pd.DataFrame:
+    """
+    Prepara el archivo de Vales usando:
+    - Unidad
+    - Total (como importe)
+    - Contrarecibo (como poliza/contrarrecibo)
+    - Concepto
+    """
+    c_unidad = resolve_col(vales_raw, ["Unidad", "Numero de Unidad", "Numero_Unidad"])
+    c_importe = resolve_col(vales_raw, ["Total", "Importe", "TotalVale"])
+    c_contrarrecibo = resolve_col(vales_raw, ["Contrarecibo", "Contrarrecibo", "Clave Poliza"])
+    c_concepto = resolve_col(vales_raw, ["Concepto", "Concepto detalle"], required=False)
+    c_vale = resolve_col(vales_raw, ["Vale", "No Vale", "Numero Vale"], required=False)
+
+    out = vales_raw.copy()
+    out["UNIDAD_KEY"] = out[c_unidad].apply(norm_for_key)
+    out["IMPORTE_KEY"] = out[c_importe].apply(lambda x: norm_amount(x, ndigits))
+    out["POLIZA_KEY"] = out[c_contrarrecibo].apply(norm_for_key)
+    out["CONCEPTO_KEY"] = out[c_concepto].apply(lambda x: canonical_concept(x, concept_map)) if c_concepto else ""
+    out["VALE_KEY"] = out[c_vale].apply(norm_for_key) if c_vale else ""
+    out["VIAJE_KEY"] = ""  # Los vales no tienen viaje
+    out["ROW_ID_VALE"] = range(1, len(out) + 1)
+    out["ORIGEN"] = "VALES"
+    return out
+
+
 # ============================================================
-# Match por mayoria de criterios
+# Matching
 # ============================================================
 
-def _pairs_by_block(left: pd.DataFrame, right: pd.DataFrame, block_cols: list[str], left_id: str, right_id: str) -> pd.DataFrame:
-    l = left[[left_id] + block_cols].copy()
-    r = right[[right_id] + block_cols].copy()
-    for c in block_cols:
-        l = l[l[c].notna() & (l[c].astype(str) != "")]
-        r = r[r[c].notna() & (r[c].astype(str) != "")]
-    if l.empty or r.empty:
-        return pd.DataFrame(columns=[left_id, right_id])
-    p = l.merge(r, on=block_cols, how="inner")[[left_id, right_id]]
-    return p.drop_duplicates()
-
-
-def make_candidate_pairs(left: pd.DataFrame, right: pd.DataFrame, left_id: str, right_id: str, mode: str) -> pd.DataFrame:
-    if mode == "base":
-        blocks = [
-            ["POLIZA_KEY", "IMPORTE_KEY"],
-            ["POLIZA_KEY", "UNIDAD_KEY"],
-            ["UNIDAD_KEY", "VIAJE_KEY", "IMPORTE_KEY"],
-            ["POLIZA_KEY", "VIAJE_KEY"],
-            ["UNIDAD_KEY", "CONCEPTO_KEY", "IMPORTE_KEY"],
-        ]
-    else:
-        blocks = [
-            ["UNIDAD_KEY", "CONCEPTO_KEY", "IMPORTE_KEY"],
-            ["UNIDAD_KEY", "IMPORTE_KEY"],
-            ["CONCEPTO_KEY", "IMPORTE_KEY"],
-            ["VALE_KEY", "IMPORTE_KEY"],
-            ["VALE_KEY", "UNIDAD_KEY"],
-            ["POLIZA_KEY", "IMPORTE_KEY"],
-            ["POLIZA_KEY", "UNIDAD_KEY"],
-        ]
-    pieces = [_pairs_by_block(left, right, b, left_id, right_id) for b in blocks]
-    pieces = [p for p in pieces if not p.empty]
-    if not pieces:
-        return pd.DataFrame(columns=[left_id, right_id])
-    return pd.concat(pieces, ignore_index=True).drop_duplicates()
-
-
-def score_pairs_base(base: pd.DataFrame, cont: pd.DataFrame, pairs: pd.DataFrame) -> pd.DataFrame:
-    if pairs.empty:
-        return pairs
-    b = base[["ROW_ID_BASE", "POLIZA_KEY", "UNIDAD_KEY", "VIAJE_KEY", "CONCEPTO_KEY", "IMPORTE_KEY"]]
-    c = cont[["ROW_ID_CONT", "POLIZA_KEY", "UNIDAD_KEY", "VIAJE_KEY", "CONCEPTO_KEY", "IMPORTE_KEY"]]
-    x = pairs.merge(b, on="ROW_ID_BASE", how="left").merge(c, on="ROW_ID_CONT", how="left", suffixes=("_BASE", "_CONT"))
-    x["COINCIDE_POLIZA"] = x["POLIZA_KEY_BASE"] == x["POLIZA_KEY_CONT"]
-    x["COINCIDE_UNIDAD"] = x["UNIDAD_KEY_BASE"] == x["UNIDAD_KEY_CONT"]
-    x["COINCIDE_VIAJE"] = x["VIAJE_KEY_BASE"] == x["VIAJE_KEY_CONT"]
-    x["COINCIDE_CONCEPTO"] = x["CONCEPTO_KEY_BASE"] == x["CONCEPTO_KEY_CONT"]
-    x["COINCIDE_IMPORTE"] = x["IMPORTE_KEY_BASE"] == x["IMPORTE_KEY_CONT"]
-    score_cols = ["COINCIDE_POLIZA", "COINCIDE_UNIDAD", "COINCIDE_VIAJE", "COINCIDE_CONCEPTO", "COINCIDE_IMPORTE"]
-    x["TOTAL_COINCIDENCIAS"] = x[score_cols].sum(axis=1).astype(int)
-    x["ESTATUS_MATCH"] = x["TOTAL_COINCIDENCIAS"].map(lambda n: "MATCH_OK" if n == 5 else ("MATCH_CON_DISCREPANCIA" if n >= 3 else "CANDIDATO_DEBIL"))
-    return x
-
-
-def score_pairs_costos(costos: pd.DataFrame, cont: pd.DataFrame, pairs: pd.DataFrame) -> pd.DataFrame:
-    if pairs.empty:
-        return pairs
-    lcols = ["ROW_ID_COSTO", "VALE_KEY", "UNIDAD_KEY", "CONCEPTO_KEY", "POLIZA_KEY", "IMPORTE_KEY"]
-    rcols = ["ROW_ID_CONT", "VALE_KEY", "UNIDAD_KEY", "CONCEPTO_KEY", "POLIZA_KEY", "IMPORTE_KEY", "TIPO_MOV"]
-    x = pairs.merge(costos[lcols], on="ROW_ID_COSTO", how="left").merge(cont[rcols], on="ROW_ID_CONT", how="left", suffixes=("_COSTO", "_CONT"))
-
-    def has_value(v):
-        return pd.notna(v) and str(v).strip().upper() not in {"", "NULL", "NONE", "NAN"}
-
-    criteria = []
-    for name, lcol, rcol in [
-        ("VALE", "VALE_KEY_COSTO", "VALE_KEY_CONT"),
-        ("UNIDAD", "UNIDAD_KEY_COSTO", "UNIDAD_KEY_CONT"),
-        ("CONCEPTO", "CONCEPTO_KEY_COSTO", "CONCEPTO_KEY_CONT"),
-        ("POLIZA", "POLIZA_KEY_COSTO", "POLIZA_KEY_CONT"),
-        ("IMPORTE", "IMPORTE_KEY_COSTO", "IMPORTE_KEY_CONT"),
-    ]:
-        eval_col = f"EVALUA_{name}"
-        ok_col = f"COINCIDE_{name}"
-        x[eval_col] = x.apply(lambda r: has_value(r.get(lcol)) and has_value(r.get(rcol)), axis=1)
-        x[ok_col] = x.apply(lambda r: bool(r[eval_col]) and r.get(lcol) == r.get(rcol), axis=1)
-        criteria.append((eval_col, ok_col))
-
-    eval_cols = [a for a, _ in criteria]
-    ok_cols = [b for _, b in criteria]
-    x["CRITERIOS_EVALUADOS"] = x[eval_cols].sum(axis=1).astype(int)
-    x["TOTAL_COINCIDENCIAS"] = x[ok_cols].sum(axis=1).astype(int)
-    x["PORCENTAJE_COINCIDENCIA"] = x.apply(lambda r: round(r["TOTAL_COINCIDENCIAS"] / r["CRITERIOS_EVALUADOS"], 4) if r["CRITERIOS_EVALUADOS"] else 0, axis=1)
-
-    def estatus(row):
-        if row["CRITERIOS_EVALUADOS"] >= 3 and row["TOTAL_COINCIDENCIAS"] == row["CRITERIOS_EVALUADOS"]:
-            return "MATCH_OK"
-        if row["TOTAL_COINCIDENCIAS"] >= 3:
-            return "MATCH_CON_DISCREPANCIA"
-        return "CANDIDATO_DEBIL"
-
-    x["ESTATUS_MATCH"] = x.apply(estatus, axis=1)
-    return x
-
-
-def greedy_best_match(scored: pd.DataFrame, left_id: str, right_id: str) -> pd.DataFrame:
-    if scored.empty:
-        return scored
-    candidates = scored[scored["TOTAL_COINCIDENCIAS"] >= 3].copy()
-    if candidates.empty:
-        return candidates
-    sort_cols = ["TOTAL_COINCIDENCIAS"]
-    ascending = [False]
-    if "CRITERIOS_EVALUADOS" in candidates.columns:
-        sort_cols.append("CRITERIOS_EVALUADOS")
-        ascending.append(False)
-    if "PORCENTAJE_COINCIDENCIA" in candidates.columns:
-        sort_cols.append("PORCENTAJE_COINCIDENCIA")
-        ascending.append(False)
-    sort_cols += [left_id, right_id]
-    ascending += [True, True]
-    candidates = candidates.sort_values(sort_cols, ascending=ascending)
-    used_left = set()
-    used_right = set()
-    rows = []
-    for _, row in candidates.iterrows():
-        lid = row[left_id]
-        rid = row[right_id]
-        if lid in used_left or rid in used_right:
-            continue
-        used_left.add(lid)
-        used_right.add(rid)
-        rows.append(row)
-    if not rows:
-        return candidates.iloc[0:0].copy()
-    return pd.DataFrame(rows)
+def score_match(
+    cand_poliza_key: str,
+    cand_unidad_key: str,
+    cand_viaje_key: str,
+    cand_concepto_key: str,
+    cand_importe_key: float,
+    ref_poliza_key: str,
+    ref_unidad_key: str,
+    ref_viaje_key: str,
+    ref_concepto_key: str,
+    ref_importe_key: float,
+) -> dict[str, object]:
+    """
+    Evalua 5 criterios: poliza, unidad, viaje, concepto, importe.
+    Devuelve dict con booleanos de coincidencia y score total.
+    """
+    coin_pol = bool(cand_poliza_key and ref_poliza_key and cand_poliza_key == ref_poliza_key)
+    coin_uni = bool(cand_unidad_key and ref_unidad_key and cand_unidad_key == ref_unidad_key)
+    coin_via = bool(cand_viaje_key and ref_viaje_key and cand_viaje_key == ref_viaje_key)
+    coin_con = bool(cand_concepto_key and ref_concepto_key and cand_concepto_key == ref_concepto_key)
+    coin_imp = False
+    if pd.notna(cand_importe_key) and pd.notna(ref_importe_key):
+        coin_imp = round(float(cand_importe_key), 2) == round(float(ref_importe_key), 2)
+    score = sum([coin_pol, coin_uni, coin_via, coin_con, coin_imp])
+    return {
+        "COINCIDE_POLIZA": coin_pol,
+        "COINCIDE_UNIDAD": coin_uni,
+        "COINCIDE_VIAJE": coin_via,
+        "COINCIDE_CONCEPTO": coin_con,
+        "COINCIDE_IMPORTE": coin_imp,
+        "TOTAL_COINCIDENCIAS": score,
+    }
 
 
 def match_base_vs_cont_mayoria(base: pd.DataFrame, cont_d: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    pairs = make_candidate_pairs(base, cont_d, "ROW_ID_BASE", "ROW_ID_CONT", mode="base")
-    scored = score_pairs_base(base, cont_d, pairs)
-    best = greedy_best_match(scored, "ROW_ID_BASE", "ROW_ID_CONT")
+    """
+    Cruza Base Saldos vs Contabilidad D usando regla de mayoria: 5 criterios.
+    MATCH_OK si coinciden 5 de 5, MATCH_CON_DISCREPANCIA si 3 o 4, NO_EXISTE si <3.
+    """
+    if base.empty or cont_d.empty:
+        return base, cont_d, pd.DataFrame(), pd.DataFrame()
 
-    score_cols = ["COINCIDE_POLIZA", "COINCIDE_UNIDAD", "COINCIDE_VIAJE", "COINCIDE_CONCEPTO", "COINCIDE_IMPORTE", "TOTAL_COINCIDENCIAS", "ESTATUS_MATCH"]
-    base_status = best[["ROW_ID_BASE", "ROW_ID_CONT"] + score_cols].copy() if not best.empty else pd.DataFrame(columns=["ROW_ID_BASE", "ROW_ID_CONT"] + score_cols)
-    base_clas = base.merge(base_status, on="ROW_ID_BASE", how="left")
+    scored = []
+    for _, r in base.iterrows():
+        candidates = cont_d[
+            (cont_d["POLIZA_KEY"] == r["POLIZA_KEY"]) |
+            (cont_d["UNIDAD_KEY"] == r["UNIDAD_KEY"]) |
+            (cont_d["VIAJE_KEY"] == r["VIAJE_KEY"]) if r.get("VIAJE_KEY") else False |
+            (cont_d["CONCEPTO_KEY"] == r["CONCEPTO_KEY"]) if r.get("CONCEPTO_KEY") else False
+        ].copy()
+        if candidates.empty:
+            continue
+        for _, c in candidates.iterrows():
+            s = score_match(
+                c["POLIZA_KEY"], c["UNIDAD_KEY"], c["VIAJE_KEY"], c["CONCEPTO_KEY"], c["IMPORTE_KEY"],
+                r["POLIZA_KEY"], r["UNIDAD_KEY"], r.get("VIAJE_KEY", ""), r.get("CONCEPTO_KEY", ""), r["IMPORTE_KEY"],
+            )
+            if s["TOTAL_COINCIDENCIAS"] >= 3:
+                scored.append({"ROW_ID_BASE": r["ROW_ID_BASE"], "ROW_ID_CONT": c["ROW_ID_CONT"], **s})
+
+    if not scored:
+        base_clas = base.copy()
+        base_clas["ESTATUS_MATCH"] = "NO_EXISTE_EN_CONTABILIDAD_D"
+        base_clas["TOTAL_COINCIDENCIAS"] = 0
+        return base_clas, cont_d, pd.DataFrame(), pd.DataFrame()
+
+    scored_df = pd.DataFrame(scored)
+    best = scored_df.loc[scored_df.groupby("ROW_ID_BASE")["TOTAL_COINCIDENCIAS"].idxmax()].copy()
+    best["ESTATUS_MATCH"] = best["TOTAL_COINCIDENCIAS"].apply(lambda x: "MATCH_OK" if x == 5 else "MATCH_CON_DISCREPANCIA")
+
+    base_clas = base.merge(
+        best[["ROW_ID_BASE", "ROW_ID_CONT", "ESTATUS_MATCH", "TOTAL_COINCIDENCIAS", "COINCIDE_POLIZA", "COINCIDE_UNIDAD", "COINCIDE_VIAJE", "COINCIDE_CONCEPTO", "COINCIDE_IMPORTE"]],
+        on="ROW_ID_BASE",
+        how="left",
+    )
     base_clas["ESTATUS_MATCH"] = base_clas["ESTATUS_MATCH"].fillna("NO_EXISTE_EN_CONTABILIDAD_D")
     base_clas["TOTAL_COINCIDENCIAS"] = base_clas["TOTAL_COINCIDENCIAS"].fillna(0).astype(int)
 
-    cont_status = best[["ROW_ID_CONT", "ROW_ID_BASE"] + score_cols].copy() if not best.empty else pd.DataFrame(columns=["ROW_ID_CONT", "ROW_ID_BASE"] + score_cols)
+    cont_status = best[["ROW_ID_CONT", "ESTATUS_MATCH", "TOTAL_COINCIDENCIAS"]].copy()
     cont_clas = cont_d.merge(cont_status, on="ROW_ID_CONT", how="left")
     cont_clas["ESTATUS_MATCH"] = cont_clas["ESTATUS_MATCH"].fillna("NO_EXISTE_EN_BASE_SALDOS")
     cont_clas["TOTAL_COINCIDENCIAS"] = cont_clas["TOTAL_COINCIDENCIAS"].fillna(0).astype(int)
-    return base_clas, cont_clas, scored, best
+    return base_clas, cont_clas, scored_df, best
 
 
-# ============================================================
-# Cheques / Vouchers
-# ============================================================
+def match_vales_vs_cont_mayoria(vales: pd.DataFrame, cont_d: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """
+    Cruza Vales vs Contabilidad D usando regla de mayoria: 5 criterios.
+    MATCH_OK si coinciden 5 de 5, MATCH_CON_DISCREPANCIA si 3 o 4, NO_EXISTE si <3.
+    """
+    if vales.empty or cont_d.empty:
+        return vales, cont_d, pd.DataFrame(), pd.DataFrame()
 
-def prep_cheques(cheques_raw: pd.DataFrame, ndigits: int, concept_map: dict[str, str]) -> tuple[pd.DataFrame, pd.DataFrame]:
-    c_vale = resolve_col(cheques_raw, ["Vale"])
-    c_unidad = resolve_col(cheques_raw, ["Unidad"])
-    c_concepto = resolve_col(cheques_raw, ["Concepto"])
-    c_cheque = resolve_col(cheques_raw, ["Cheque", "No Cheque", "Numero Cheque"], required=False)
-    c_obs = resolve_col(cheques_raw, ["Observaciones", "Observacion"], required=False)
-    c_contra = resolve_col(cheques_raw, ["Contrarrecibo", "Contrarecibo", "Contrarrecibo"])
-    c_importe = resolve_col(cheques_raw, ["Importe", "Monto", "Total"])
-    c_cargo = resolve_col(cheques_raw, ["CargoA", "Cargo A", "Cargo_a"], required=False)
+    scored = []
+    for _, r in vales.iterrows():
+        candidates = cont_d[
+            (cont_d["POLIZA_KEY"] == r["POLIZA_KEY"]) |
+            (cont_d["UNIDAD_KEY"] == r["UNIDAD_KEY"]) |
+            (cont_d["CONCEPTO_KEY"] == r["CONCEPTO_KEY"]) if r.get("CONCEPTO_KEY") else False |
+            (cont_d["VALE_KEY"] == r["VALE_KEY"]) if r.get("VALE_KEY") else False
+        ].copy()
+        if candidates.empty:
+            continue
+        for _, c in candidates.iterrows():
+            s = score_match(
+                c["POLIZA_KEY"], c["UNIDAD_KEY"], c.get("VIAJE_KEY", ""), c["CONCEPTO_KEY"], c["IMPORTE_KEY"],
+                r["POLIZA_KEY"], r["UNIDAD_KEY"], r.get("VIAJE_KEY", ""), r.get("CONCEPTO_KEY", ""), r["IMPORTE_KEY"],
+            )
+            if s["TOTAL_COINCIDENCIAS"] >= 3:
+                scored.append({"ROW_ID_VALE": r["ROW_ID_VALE"], "ROW_ID_CONT": c["ROW_ID_CONT"], **s})
 
-    out = cheques_raw.copy()
-    out["SOURCE"] = "CHEQUES"
-    out["ROW_ID_ORIGEN"] = range(1, len(out) + 1)
-    out["CARGOA_KEY"] = out[c_cargo].apply(norm_for_key) if c_cargo else ""
-    excluidos_company = out[out["CARGOA_KEY"] == "COMPANY"].copy()
-    out = out[out["CARGOA_KEY"] != "COMPANY"].copy()
-    out["VALE_KEY"] = out[c_vale].apply(norm_for_key)
-    out["UNIDAD_KEY"] = out[c_unidad].apply(norm_for_key)
-    out["CONCEPTO_KEY"] = out[c_concepto].apply(lambda x: canonical_concept(x, concept_map))
-    cheque_obs = (out[c_cheque].fillna("").astype(str) if c_cheque else "") + " " + (out[c_obs].fillna("").astype(str) if c_obs else "")
-    out["OBS_KEY"] = pd.Series(cheque_obs, index=out.index).apply(norm_for_key)
-    out["POLIZA_KEY"] = out[c_contra].apply(norm_for_key)
-    out["IMPORTE_KEY"] = out[c_importe].apply(lambda x: norm_amount(x, ndigits))
-    return out, excluidos_company
+    if not scored:
+        vales_clas = vales.copy()
+        vales_clas["ESTATUS_MATCH"] = "NO_EXISTE_EN_CONTABILIDAD_D"
+        vales_clas["TOTAL_COINCIDENCIAS"] = 0
+        return vales_clas, cont_d, pd.DataFrame(), pd.DataFrame()
 
+    scored_df = pd.DataFrame(scored)
+    best = scored_df.loc[scored_df.groupby("ROW_ID_VALE")["TOTAL_COINCIDENCIAS"].idxmax()].copy()
+    best["ESTATUS_MATCH"] = best["TOTAL_COINCIDENCIAS"].apply(lambda x: "MATCH_OK" if x == 5 else "MATCH_CON_DISCREPANCIA")
 
-def prep_vouchers(vouchers_raw: pd.DataFrame, ndigits: int, concept_map: dict[str, str]) -> tuple[pd.DataFrame, pd.DataFrame]:
-    c_vale = resolve_col(vouchers_raw, ["Vale"])
-    c_unidad = resolve_col(vouchers_raw, ["Unidad"])
-    c_concepto = resolve_col(vouchers_raw, ["Concepto"])
-    c_obs = resolve_col(vouchers_raw, ["Observaciones", "Observacion"], required=False)
-    c_contra = resolve_col(vouchers_raw, ["Contrarrecibo", "Contrarecibo", "Contrarrecibo"], required=False)
-    c_total = resolve_col(vouchers_raw, ["Total", "Importe", "Monto"])
-    c_operador = resolve_col(vouchers_raw, ["Operador", "Owner", "Nombre"], required=False)
+    vales_clas = vales.merge(
+        best[["ROW_ID_VALE", "ROW_ID_CONT", "ESTATUS_MATCH", "TOTAL_COINCIDENCIAS", "COINCIDE_POLIZA", "COINCIDE_UNIDAD", "COINCIDE_VIAJE", "COINCIDE_CONCEPTO", "COINCIDE_IMPORTE"]],
+        on="ROW_ID_VALE",
+        how="left",
+    )
+    vales_clas["ESTATUS_MATCH"] = vales_clas["ESTATUS_MATCH"].fillna("NO_EXISTE_EN_CONTABILIDAD_D")
+    vales_clas["TOTAL_COINCIDENCIAS"] = vales_clas["TOTAL_COINCIDENCIAS"].fillna(0).astype(int)
 
-    out = vouchers_raw.copy()
-    out["SOURCE"] = "VOUCHERS"
-    out["ROW_ID_ORIGEN"] = range(1, len(out) + 1)
-    out["OPERADOR_KEY"] = out[c_operador].apply(norm_for_key) if c_operador else ""
-    excluidos_filial = out[out["OPERADOR_KEY"].str.contains(r"\bFILIAL\b", na=False)].copy() if c_operador else out.iloc[0:0].copy()
-    out = out[~out.index.isin(excluidos_filial.index)].copy()
-
-    out["VALE_KEY"] = out[c_vale].apply(norm_for_key)
-    out["UNIDAD_KEY"] = out[c_unidad].apply(norm_for_key)
-    out["CONCEPTO_KEY"] = out[c_concepto].apply(lambda x: canonical_concept(x, concept_map))
-    out["OBS_KEY"] = out[c_obs].apply(norm_for_key) if c_obs else ""
-    out["POLIZA_KEY"] = out[c_contra].apply(norm_for_key) if c_contra else ""
-    out["IMPORTE_KEY"] = out[c_total].apply(lambda x: norm_amount(x, ndigits))
-    return out, excluidos_filial
-
-
-def dedupe_costos(cheques: pd.DataFrame, vouchers: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    costos = pd.concat([cheques, vouchers], ignore_index=True, sort=False)
-    costos["ROW_ID_COSTO"] = range(1, len(costos) + 1)
-    dup_keys = ["VALE_KEY", "UNIDAD_KEY", "CONCEPTO_KEY", "OBS_KEY", "POLIZA_KEY", "IMPORTE_KEY"]
-    costos["DUP_COUNT"] = costos.groupby(dup_keys, dropna=False)["ROW_ID_COSTO"].transform("size")
-    costos["DUP_SEQ"] = costos.groupby(dup_keys, dropna=False).cumcount() + 1
-    duplicados = costos[costos["DUP_COUNT"] > 1].copy()
-    # Si hay duplicado entre CHEQUES y VOUCHERS, conserva el primero por llave.
-    depurados = costos.sort_values(["DUP_SEQ", "SOURCE"]).drop_duplicates(dup_keys, keep="first").copy()
-    return depurados, duplicados
-
-
-def match_costos_vs_cont_mayoria(costos: pd.DataFrame, cont_d: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    pairs = make_candidate_pairs(costos, cont_d, "ROW_ID_COSTO", "ROW_ID_CONT", mode="costos")
-    scored = score_pairs_costos(costos, cont_d, pairs)
-    best = greedy_best_match(scored, "ROW_ID_COSTO", "ROW_ID_CONT")
-    score_cols = [
-        "COINCIDE_VALE", "COINCIDE_UNIDAD", "COINCIDE_CONCEPTO", "COINCIDE_POLIZA", "COINCIDE_IMPORTE",
-        "EVALUA_VALE", "EVALUA_UNIDAD", "EVALUA_CONCEPTO", "EVALUA_POLIZA", "EVALUA_IMPORTE",
-        "CRITERIOS_EVALUADOS", "TOTAL_COINCIDENCIAS", "PORCENTAJE_COINCIDENCIA", "ESTATUS_MATCH",
-    ]
-
-    costo_status = best[["ROW_ID_COSTO", "ROW_ID_CONT"] + [c for c in score_cols if c in best.columns]].copy() if not best.empty else pd.DataFrame(columns=["ROW_ID_COSTO", "ROW_ID_CONT"] + score_cols)
-    cont_info_cols = ["ROW_ID_CONT", "TIPO_MOV", "POLIZA_KEY", "UNIDAD_KEY", "VALE_KEY", "CONCEPTO_KEY", "IMPORTE_KEY"]
-    cont_info = cont_d[[c for c in cont_info_cols if c in cont_d.columns]].copy()
-    cont_info = cont_info.rename(columns={
-        "TIPO_MOV": "CONT_TIPO_MOV",
-        "POLIZA_KEY": "CONT_POLIZA_KEY",
-        "UNIDAD_KEY": "CONT_UNIDAD_KEY",
-        "VALE_KEY": "CONT_VALE_KEY",
-        "CONCEPTO_KEY": "CONT_CONCEPTO_KEY",
-        "IMPORTE_KEY": "CONT_IMPORTE_KEY",
-    })
-    costo_status = costo_status.merge(cont_info, on="ROW_ID_CONT", how="left") if not costo_status.empty else costo_status
-
-    costos_clas = costos.merge(costo_status, on="ROW_ID_COSTO", how="left")
-    costos_clas["ESTATUS_MATCH"] = costos_clas["ESTATUS_MATCH"].fillna("NO_EXISTE_EN_CONTABILIDAD_D")
-    costos_clas["TOTAL_COINCIDENCIAS"] = costos_clas["TOTAL_COINCIDENCIAS"].fillna(0).astype(int)
-    if "CRITERIOS_EVALUADOS" in costos_clas.columns:
-        costos_clas["CRITERIOS_EVALUADOS"] = costos_clas["CRITERIOS_EVALUADOS"].fillna(0).astype(int)
-
-    cont_status = best[["ROW_ID_CONT", "ROW_ID_COSTO"] + [c for c in score_cols if c in best.columns]].copy() if not best.empty else pd.DataFrame(columns=["ROW_ID_CONT", "ROW_ID_COSTO"] + score_cols)
+    cont_status = best[["ROW_ID_CONT", "ESTATUS_MATCH", "TOTAL_COINCIDENCIAS"]].copy()
     cont_clas = cont_d.merge(cont_status, on="ROW_ID_CONT", how="left")
-    cont_clas["ESTATUS_MATCH"] = cont_clas["ESTATUS_MATCH"].fillna("NO_EXISTE_EN_COSTOS_DEPURADOS")
+    cont_clas["ESTATUS_MATCH"] = cont_clas["ESTATUS_MATCH"].fillna("NO_EXISTE_EN_VALES")
     cont_clas["TOTAL_COINCIDENCIAS"] = cont_clas["TOTAL_COINCIDENCIAS"].fillna(0).astype(int)
-    if "CRITERIOS_EVALUADOS" in cont_clas.columns:
-        cont_clas["CRITERIOS_EVALUADOS"] = cont_clas["CRITERIOS_EVALUADOS"].fillna(0).astype(int)
-    return costos_clas, cont_clas, scored, best
+    return vales_clas, cont_clas, scored_df, best
 
 
 def resumen_dh_contabilidad(cont_all: pd.DataFrame) -> pd.DataFrame:
@@ -472,8 +382,8 @@ def resumen_dh_contabilidad(cont_all: pd.DataFrame) -> pd.DataFrame:
 # UI
 # ============================================================
 
-st.title("Saldos Owner - Desarrollo de Costos v2.1")
-st.caption("Version v2.1: conserva Base Saldos v2 y mejora Cheques/Vouchers con llaves disponibles, exclusión FILIAL y diagnóstico D/H.")
+st.title("Saldos Owner - Desarrollo de Costos (Versión Vales)")
+st.caption("Version con Vales: utiliza el archivo de Vales en lugar de Cheques y Vouchers.")
 
 with st.expander("Como leer esta version", expanded=True):
     st.markdown(
@@ -484,6 +394,8 @@ with st.expander("Como leer esta version", expanded=True):
         - **MATCH_CON_DISCREPANCIA**: coinciden 3 o 4 de 5 criterios. Es candidato probable, pero hay algo que revisar.
         - **NO_EXISTE_EN_CONTABILIDAD_D**: no encontro candidato con al menos 3 criterios.
 
+        **Vales vs Contabilidad D** usa las columnas: Unidad, Total (importe), Contrarecibo (póliza) y Concepto.
+
         La tabla muestra columnas de diagnostico como `COINCIDE_POLIZA`, `COINCIDE_UNIDAD`, `COINCIDE_VIAJE`, `COINCIDE_CONCEPTO`, `COINCIDE_IMPORTE` y `TOTAL_COINCIDENCIAS` para que no tengas que adivinar que fallo.
         """
     )
@@ -492,12 +404,11 @@ with st.sidebar:
     st.header("Archivos")
     cont_file = st.file_uploader("Contabilidad", type=["xlsx", "xls", "xlsm", "csv"])
     base_file = st.file_uploader("Base Saldos corregida", type=["xlsx", "xls", "xlsm", "csv"])
-    cheques_file = st.file_uploader("Cheques", type=["xlsx", "xls", "xlsm", "csv"])
-    vouchers_file = st.file_uploader("Vouchers", type=["xlsx", "xls", "xlsm", "csv"])
+    vales_file = st.file_uploader("Vales", type=["xlsx", "xls", "xlsm", "csv"])
     concept_file = st.file_uploader("Catalogo conceptos opcional", type=["xlsx", "xls", "xlsm", "csv"])
     st.divider()
     ndigits = st.number_input("Redondeo de importe", min_value=0, max_value=4, value=2, step=1)
-    proceso = st.radio("Proceso", ["Base Saldos vs Contabilidad D", "Cheques/Vouchers vs Contabilidad D", "Ambos"], index=0)
+    proceso = st.radio("Proceso", ["Base Saldos vs Contabilidad D", "Vales vs Contabilidad D", "Ambos"], index=0)
     run = st.button("Procesar costos", type="primary")
 
 if not run:
@@ -559,63 +470,49 @@ if proceso in {"Base Saldos vs Contabilidad D", "Ambos"}:
         except Exception as e:
             st.error(f"No pude procesar Base Saldos: {e}")
 
-if proceso in {"Cheques/Vouchers vs Contabilidad D", "Ambos"}:
+if proceso in {"Vales vs Contabilidad D", "Ambos"}:
     st.divider()
-    st.header("2) Cheques/Vouchers vs Contabilidad D")
-    if cheques_file is None or vouchers_file is None:
-        st.warning("Faltan Cheques y/o Vouchers.")
+    st.header("2) Vales vs Contabilidad D")
+    if vales_file is None:
+        st.warning("Falta archivo de Vales.")
     else:
         try:
-            cheques_raw = read_table(cheques_file)
-            vouchers_raw = read_table(vouchers_file)
-            cheques, cheques_company = prep_cheques(cheques_raw, ndigits, concept_map)
-            vouchers, vouchers_filial = prep_vouchers(vouchers_raw, ndigits, concept_map)
-            costos_depurados, costos_duplicados = dedupe_costos(cheques, vouchers)
-            costos_clas, cont_costos_clas, candidatos_costos, mejores_costos = match_costos_vs_cont_mayoria(costos_depurados, cont_d)
+            vales_raw = read_table(vales_file)
+            vales = prep_vales(vales_raw, ndigits, concept_map)
+            vales_clas, cont_vales_clas, candidatos_vales, mejores_vales = match_vales_vs_cont_mayoria(vales, cont_d)
             resumen_dh = resumen_dh_contabilidad(cont_all)
             result_sheets.update({
-                "Cheques_excluidos_Company": cheques_company,
-                "Vouchers_excluidos_Filial": vouchers_filial,
-                "Costos_depurados": costos_depurados,
-                "Costos_duplicados": costos_duplicados,
-                "Costos_clasificados": costos_clas,
-                "Cont_vs_Costos": cont_costos_clas,
-                "Candidatos_Costos_Cont": candidatos_costos,
-                "Mejores_matches_Costos": mejores_costos,
+                "Vales_clasificados": vales_clas,
+                "Cont_vs_Vales": cont_vales_clas,
+                "Candidatos_Vales_Cont": candidatos_vales,
+                "Mejores_matches_Vales": mejores_vales,
                 "Resumen_DH_Contabilidad": resumen_dh,
             })
-            c1, c2, c3, c4, c5, c6 = st.columns(6)
-            c1.metric("Cheques excluidos Company", f"{len(cheques_company):,}")
-            c2.metric("Vouchers excluidos Filial", f"{len(vouchers_filial):,}")
-            c3.metric("Costos depurados", f"{len(costos_depurados):,}")
-            c4.metric("Duplicados detectados", f"{len(costos_duplicados):,}")
-            c5.metric("MATCH_OK", f"{int((costos_clas['ESTATUS_MATCH'] == 'MATCH_OK').sum()):,}")
-            c6.metric("MATCH_CON_DISCREPANCIA", f"{int((costos_clas['ESTATUS_MATCH'] == 'MATCH_CON_DISCREPANCIA').sum()):,}")
-            t1, t2, t3, t4, t5, t6, t7, t8 = st.tabs(["Costos clasificados", "Duplicados", "Excluidos Company", "Excluidos Filial", "Contabilidad contra Costos", "Candidatos tecnicos", "Mejores matches", "Resumen D/H"])
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Vales totales", f"{len(vales):,}")
+            c2.metric("MATCH_OK", f"{int((vales_clas['ESTATUS_MATCH'] == 'MATCH_OK').sum()):,}")
+            c3.metric("MATCH_CON_DISCREPANCIA", f"{int((vales_clas['ESTATUS_MATCH'] == 'MATCH_CON_DISCREPANCIA').sum()):,}")
+            c4.metric("No existe en Cont D", f"{int((vales_clas['ESTATUS_MATCH'] == 'NO_EXISTE_EN_CONTABILIDAD_D').sum()):,}")
+
+            t1, t2, t3, t4, t5 = st.tabs(["Vales clasificados", "Contabilidad contra Vales", "Candidatos tecnicos", "Mejores matches", "Resumen D/H"])
             with t1:
-                show_df(costos_clas)
+                show_df(vales_clas)
             with t2:
-                show_df(costos_duplicados)
+                show_df(cont_vales_clas)
             with t3:
-                show_df(cheques_company)
+                show_df(candidatos_vales)
             with t4:
-                show_df(vouchers_filial)
+                show_df(mejores_vales)
             with t5:
-                show_df(cont_costos_clas)
-            with t6:
-                show_df(candidatos_costos)
-            with t7:
-                show_df(mejores_costos)
-            with t8:
                 show_df(resumen_dh)
         except Exception as e:
-            st.error(f"No pude procesar Cheques/Vouchers: {e}")
+            st.error(f"No pude procesar Vales: {e}")
 
 if len(result_sheets) > 1:
     st.divider()
     st.download_button(
         "Descargar resultado costos en Excel",
         data=to_excel_bytes(result_sheets),
-        file_name="resultado_costos_owner_v2_1.xlsx",
+        file_name="resultado_costos_owner_vales.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
