@@ -181,10 +181,10 @@ def prep_contabilidad(cont_raw: pd.DataFrame, ndigits: int, concept_map: dict[st
 
 
 def prep_base_saldos(base_raw: pd.DataFrame, ndigits: int, concept_map: dict[str, str]) -> pd.DataFrame:
-    c_poliza = resolve_col(base_raw, ["Clave Poliza", "Clave Póliza", "ClavePoliza", "Contrarrecibo", "Factura"])
-    c_unidad = resolve_col(base_raw, ["Unidad", "Numero de Unidad", "Numero_Unidad"])
-    c_viaje = resolve_col(base_raw, ["Referencia", "Numero_Viaje", "Numero Viaje", "Viaje"], required=False)
-    c_concepto = resolve_col(base_raw, ["Concepto detalle", "Concepto Detalle", "Concepto", "NombreCuentaContable"], required=False)
+    c_poliza = resolve_col(base_raw, ["FOLIO_CONTRARRECIBO", "Contrarrecibo", "Clave Poliza", "Clave Póliza", "ClavePoliza", "Factura"])
+    c_unidad = resolve_col(base_raw, ["NUMERO_UNIDAD", "Unidad", "Numero de Unidad", "Numero_Unidad"])
+    c_viaje = resolve_col(base_raw, ["NUMERO_VIAJE", "Referencia", "Numero_Viaje", "Numero Viaje", "Viaje"], required=False)
+    c_concepto = resolve_col(base_raw, ["Tipo concepto", "Concepto contabilidad", "Concepto detalle", "Concepto Detalle", "Concepto", "NombreCuentaContable"], required=False)
     c_importe = resolve_col(base_raw, ["Importe", "Total", "Monto"])
 
     out = base_raw.copy()
