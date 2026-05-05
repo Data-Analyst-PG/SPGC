@@ -166,17 +166,17 @@ def ejecutar_etapa_1_ingresos(liq_file, cont_file, ndigits: int, liq_tipo: str):
             "Tipo_Concepto": "TIPO_CONCEPTO",
         })
         
-        # Normalizar
+        # Normalizar ANTES de filtrar
         for c in ["PR", "VIAJE", "TIPO_PAGO", "UNIDAD", "OWNER_LIQ", "TIPO_CONCEPTO"]:
             if c in liq.columns:
                 liq[c] = liq[c].apply(norm_text)
         
         liq["IMPORTE"] = pd.to_numeric(liq["IMPORTE"].apply(lambda x: norm_amount(x, ndigits)), errors="coerce")
-        liq["ROW_ID_LIQ"] = range(1, len(liq) + 1)
         
         # Filtrar
         liq_f = liq[liq["TIPO_CONCEPTO"] == liq_tipo].copy()
         liq_f = liq_f.reset_index(drop=True)
+        liq_f["ROW_ID_LIQ"] = range(1, len(liq_f) + 1)
         
         st.success(f"✅ Liquidaciones cargadas: {len(liq):,} | Filtradas: {len(liq_f):,}")
     
@@ -195,25 +195,34 @@ def ejecutar_etapa_1_ingresos(liq_file, cont_file, ndigits: int, liq_tipo: str):
             "TipoMovimiento": "TIPO_MOV",
         })
         
+        # Normalizar ANTES de filtrar
         for c in ["PR", "VIAJE", "TIPO_PAGO", "UNIDAD", "OWNER_CONT", "TIPO_MOV"]:
             if c in cont.columns:
                 cont[c] = cont[c].apply(norm_text)
         
         cont["IMPORTE"] = pd.to_numeric(cont["IMPORTE"].apply(lambda x: norm_amount(x, ndigits)), errors="coerce")
-        cont["ROW_ID_CONT"] = range(1, len(cont) + 1)
         
         # Filtrar solo H
         cont_f = cont[cont["TIPO_MOV"] == "H"].copy()
         cont_f = cont_f.reset_index(drop=True)
+        cont_f["ROW_ID_CONT"] = range(1, len(cont_f) + 1)
         
         st.success(f"✅ Contabilidad cargada: {len(cont):,} | H filtrados: {len(cont_f):,}")
     
     # Matching
     with st.spinner("Ejecutando matching..."):
-        key_cols = ["PR", "VIAJE", "UNIDAD", "TIPO_PAGO", "IMPORTE"]
+        # Verificar qué columnas están disponibles para matching
+        key_cols = ["PR", "VIAJE", "UNIDAD", "IMPORTE"]
         
-        liq_k = build_seq(liq_f, key_cols)
-        cont_k = build_seq(cont_f, key_cols)
+        # Agregar TIPO_PAGO solo si existe en ambos con datos
+        if "TIPO_PAGO" in liq_f.columns and "TIPO_PAGO" in cont_f.columns:
+            if liq_f["TIPO_PAGO"].notna().any() and cont_f["TIPO_PAGO"].notna().any():
+                key_cols.append("TIPO_PAGO")
+        
+        st.info(f"🔑 Columnas para matching: {', '.join(key_cols)}")
+        
+        liq_k = build_seq(liq_f[["ROW_ID_LIQ", "OWNER_LIQ"] + key_cols].copy(), key_cols)
+        cont_k = build_seq(cont_f[["ROW_ID_CONT", "OWNER_CONT"] + key_cols].copy(), key_cols)
         
         merge_keys = key_cols + ["_seq"]
         
@@ -246,6 +255,7 @@ def ejecutar_etapa_1_ingresos(liq_file, cont_file, ndigits: int, liq_tipo: str):
         only_cont[["ROW_ID_CONT", "ESTATUS_MATCH"]].assign(ROW_ID_LIQ=pd.NA, OWNER_LIQ="")
     ], ignore_index=True)
     
+    # Merge con datos originales completos
     liq_clasificado = liq_f.merge(liq_status, on="ROW_ID_LIQ", how="left")
     cont_clasificado = cont_f.merge(cont_status, on="ROW_ID_CONT", how="left")
     
