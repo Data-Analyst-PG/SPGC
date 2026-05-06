@@ -11,17 +11,8 @@ except ModuleNotFoundError:
     st = None
 
 FINAL_COLUMNS = [
-    "EMPRESA",
-    "# FACTURA",
-    "UUID",
-    "FECHA FACTURA",
-    "FECHA Y HR SERVICIO REALIZADO",
-    "# DE UNIDAD",
-    "ACTIVIDAD",
-    "CANTIDAD",
-    "SUBTOTAL",
-    "IVA",
-    "TOTAL",
+    "EMPRESA", "# FACTURA", "UUID", "FECHA FACTURA", "FECHA Y HR SERVICIO REALIZADO",
+    "# DE UNIDAD", "ACTIVIDAD", "CANTIDAD", "SUBTOTAL", "IVA", "TOTAL",
 ]
 
 PROVEEDORES = {
@@ -29,7 +20,6 @@ PROVEEDORES = {
     "ROYAN": ["ALLAN ADRIAN NAVARRO MACIAS", "NAMA820330G3A"],
     "WASH N CROSS": ["WASH N CROSS", "WNC070608P43"],
 }
-
 SAT_GENERICO = "SAT GENERICO"
 
 
@@ -70,8 +60,7 @@ def attr(elem: Optional[ET.Element], key: str, default: str = "") -> str:
 
 
 def get_uuid(root: ET.Element) -> str:
-    timbre = find_first(root, "TimbreFiscalDigital")
-    return attr(timbre, "UUID")
+    return attr(find_first(root, "TimbreFiscalDigital"), "UUID")
 
 
 def get_emisor_receptor(root: ET.Element) -> Tuple[Dict[str, str], Dict[str, str]]:
@@ -93,8 +82,7 @@ def get_iva_from_concept(concepto: ET.Element) -> Decimal:
 
 
 def get_base_from_concept(concepto: ET.Element) -> Decimal:
-    traslados = find_all(concepto, "Traslado")
-    for traslado in traslados:
+    for traslado in find_all(concepto, "Traslado"):
         if traslado.attrib.get("Base"):
             return D(traslado.attrib.get("Base"))
     return D(concepto.attrib.get("Importe"))
@@ -106,7 +94,6 @@ def detect_format(root: ET.Element) -> str:
     for formato, needles in PROVEEDORES.items():
         if any(norm(n) in emisor_text for n in needles):
             return formato
-    # Todo XML CFDI valido que no sea proveedor propio entra como SAT generico.
     if local_name(root.tag) == "Comprobante" and get_concepts(root):
         return SAT_GENERICO
     return "NO DETECTADO"
@@ -118,13 +105,33 @@ def serie_folio(root: ET.Element) -> str:
     return f"{serie}-{folio}" if serie and folio else (folio or serie)
 
 
+def common_header(root: ET.Element) -> Dict[str, str]:
+    emisor, receptor = get_emisor_receptor(root)
+    return {
+        "empresa": receptor.get("Nombre", ""),
+        "folio": attr(root, "Folio"),
+        "serie_folio": serie_folio(root),
+        "uuid": get_uuid(root),
+        "fecha": attr(root, "Fecha"),
+        "emisor_nombre": emisor.get("Nombre", ""),
+    }
+
+
+def all_xml_text(root: ET.Element) -> str:
+    parts = []
+    for elem in root.iter():
+        parts.extend([str(v) for v in elem.attrib.values()])
+        if elem.text and elem.text.strip():
+            parts.append(elem.text.strip())
+    return " ".join(parts)
+
+
 def complemento_text(root: ET.Element) -> str:
-    # Algunos proveedores guardan comentarios/observaciones en Addenda o Complemento.
     texts = []
     for elem in root.iter():
         ln = local_name(elem.tag).upper()
         if ln in {"ADDENDA", "COMPLEMENTO", "OBSERVACIONES", "COMENTARIOS"}:
-            texts.append(" ".join([str(v) for v in elem.attrib.values()]))
+            texts.extend([str(v) for v in elem.attrib.values()])
             if elem.text:
                 texts.append(elem.text)
         for k, v in elem.attrib.items():
@@ -149,23 +156,10 @@ def extract_unit_k9(text: str) -> str:
 
 
 def unit_from_description_after_colon(descripcion: str) -> str:
-    # SAT generico: toma lo que venga despues del ultimo ':'; ej. "CAJA: PI59" -> PI59.
     if ":" not in descripcion:
         return ""
     value = descripcion.rsplit(":", 1)[-1].strip()
     return re.split(r"\s+", value)[0].strip(".,;:")
-
-
-def common_header(root: ET.Element) -> Dict[str, str]:
-    emisor, receptor = get_emisor_receptor(root)
-    return {
-        "empresa": receptor.get("Nombre", ""),
-        "folio": attr(root, "Folio"),
-        "serie_folio": serie_folio(root),
-        "uuid": get_uuid(root),
-        "fecha": attr(root, "Fecha"),
-        "emisor_nombre": emisor.get("Nombre", ""),
-    }
 
 
 def make_row(empresa, factura, uuid, fecha, fecha_servicio, unidad, actividad, cantidad, subtotal, iva) -> Dict[str, object]:
@@ -186,46 +180,65 @@ def make_row(empresa, factura, uuid, fecha, fecha_servicio, unidad, actividad, c
     }
 
 
-def parse_k9(root: ET.Element) -> List[Dict[str, object]]:
+def concept_custom_value(concepto: ET.Element, keys: List[str]) -> str:
+    wanted = [norm(k).replace(".", "").replace("_", "").replace(" ", "") for k in keys]
+    for elem in [concepto] + list(concepto.iter()):
+        for k, v in elem.attrib.items():
+            nk = norm(k).replace(".", "").replace("_", "").replace(" ", "")
+            if any(w in nk for w in wanted):
+                return v
+    return ""
+
+
+def parse_k9(root: ET.Element) -> Tuple[List[Dict[str, object]], str]:
     h = common_header(root)
-    text = complemento_text(root)
+    text = complemento_text(root) or all_xml_text(root)
     factura = extract_order_k9(text) or h["folio"] or h["serie_folio"]
     fecha_serv = extract_service_datetime_k9(text)
     unidad = extract_unit_k9(text)
     rows = []
     for c in get_concepts(root):
         subtotal = D(c.attrib.get("Importe"))
-        iva = subtotal * Decimal("0.08")
+        iva = get_iva_from_concept(c) or subtotal * Decimal("0.08")
         rows.append(make_row(h["empresa"], factura, h["uuid"], h["fecha"], fecha_serv, unidad,
                              c.attrib.get("Descripcion", ""), D(c.attrib.get("Cantidad")), subtotal, iva))
-    return rows
+    msg = ""
+    if not (extract_order_k9(text) and fecha_serv and unidad):
+        msg = "XML procesado, pero no trae comentarios K9 (orden/unidad/servicio); esos datos solo aparecen en el PDF si el proveedor no los incluye en Addenda."
+    return rows, msg
 
 
-def parse_royan(root: ET.Element) -> List[Dict[str, object]]:
+def parse_royan(root: ET.Element) -> Tuple[List[Dict[str, object]], str]:
     h = common_header(root)
     rows = []
-    # En XML puro normalmente solo viene el concepto fiscal resumido. Si el XML trae Addenda con partidas, se procesan.
-    # Si no hay Addenda, se genera la(s) partida(s) disponibles en Concepto.
     for c in get_concepts(root):
         subtotal = D(c.attrib.get("Importe"))
-        iva = subtotal * Decimal("0.16")
-        rows.append(make_row(h["empresa"], h["folio"], h["uuid"], h["fecha"], "", "",
+        iva = get_iva_from_concept(c) or subtotal * Decimal("0.16")
+        rows.append(make_row(h["empresa"], h["folio"] or h["serie_folio"], h["uuid"], h["fecha"], "", "",
                              c.attrib.get("Descripcion", ""), Decimal("1"), subtotal, iva))
-    return rows
+    return rows, "XML ROYAN procesado; el detalle de hoja 2 no viene en este XML, solo viene el concepto fiscal resumido."
 
 
-def parse_wash(root: ET.Element) -> List[Dict[str, object]]:
+def parse_wash(root: ET.Element) -> Tuple[List[Dict[str, object]], str]:
     h = common_header(root)
     rows = []
+    missing_ref_obs = False
     for c in get_concepts(root):
         subtotal = D(c.attrib.get("Importe"))
-        iva = subtotal * Decimal("0.08")
-        rows.append(make_row(h["empresa"], h["serie_folio"], h["uuid"], h["fecha"], "", "",
+        iva = get_iva_from_concept(c) or subtotal * Decimal("0.08")
+        ref_pago = concept_custom_value(c, ["REFPAGO", "REF PAGO", "REF.PAGO", "REFERENCIA PAGO"])
+        obs = concept_custom_value(c, ["OBS", "OBSERVACION", "OBSERVACIONES", "FECHA SERVICIO"])
+        if not ref_pago or not obs:
+            missing_ref_obs = True
+        rows.append(make_row(h["empresa"], h["serie_folio"], h["uuid"], h["fecha"], obs, ref_pago,
                              c.attrib.get("Descripcion", ""), D(c.attrib.get("Cantidad")), subtotal, iva))
-    return rows
+    msg = ""
+    if missing_ref_obs:
+        msg = "XML procesado, pero REF.PAGO y OBS no vienen dentro del XML CFDI; por eso # DE UNIDAD y fecha servicio quedan vacios. Esos datos aparecen en el PDF/representacion impresa."
+    return rows, msg
 
 
-def parse_sat_generico(root: ET.Element) -> List[Dict[str, object]]:
+def parse_sat_generico(root: ET.Element) -> Tuple[List[Dict[str, object]], str]:
     h = common_header(root)
     rows = []
     for c in get_concepts(root):
@@ -233,17 +246,17 @@ def parse_sat_generico(root: ET.Element) -> List[Dict[str, object]]:
         subtotal = get_base_from_concept(c)
         iva = get_iva_from_concept(c)
         cantidad = D(c.attrib.get("Cantidad"))
-        if cantidad == cantidad.to_integral():
-            cantidad_out = int(cantidad)
-        else:
-            cantidad_out = float(cantidad)
+        cantidad_out = int(cantidad) if cantidad == cantidad.to_integral() else float(cantidad)
         rows.append(make_row(h["empresa"], h["folio"] or h["serie_folio"], h["uuid"], h["fecha"], "",
                              unit_from_description_after_colon(descripcion), descripcion, cantidad_out, subtotal, iva))
-    return rows
+    return rows, ""
 
 
 def parse_xml_bytes(file_name: str, xml_bytes: bytes) -> Tuple[List[Dict[str, object]], Dict[str, object]]:
     debug = {"archivo": file_name, "formato": "", "filas": 0, "estatus": "OK", "mensaje": ""}
+    if not xml_bytes or len(xml_bytes.strip()) == 0:
+        debug.update({"formato": "NO LEIDO", "estatus": "ERROR", "mensaje": "Archivo XML vacio (0 bytes)."})
+        return [], debug
     try:
         root = ET.fromstring(xml_bytes)
     except ET.ParseError as e:
@@ -254,17 +267,20 @@ def parse_xml_bytes(file_name: str, xml_bytes: bytes) -> Tuple[List[Dict[str, ob
     debug["formato"] = formato
     try:
         if formato == "K9":
-            rows = parse_k9(root)
+            rows, msg = parse_k9(root)
         elif formato == "ROYAN":
-            rows = parse_royan(root)
+            rows, msg = parse_royan(root)
         elif formato == "WASH N CROSS":
-            rows = parse_wash(root)
+            rows, msg = parse_wash(root)
         elif formato == SAT_GENERICO:
-            rows = parse_sat_generico(root)
+            rows, msg = parse_sat_generico(root)
         else:
-            rows = []
-            debug.update({"estatus": "ERROR", "mensaje": "No se detecto como CFDI valido."})
+            rows, msg = [], "No se detecto como CFDI valido."
+            debug["estatus"] = "ERROR"
         debug["filas"] = len(rows)
+        debug["mensaje"] = msg
+        if msg and debug["estatus"] == "OK":
+            debug["estatus"] = "OK CON AVISO"
         return rows, debug
     except Exception as e:
         debug.update({"estatus": "ERROR", "mensaje": str(e)})
@@ -285,25 +301,22 @@ def dataframe_to_excel_bytes(df: pd.DataFrame) -> bytes:
 def main():
     st.set_page_config(page_title="Consolidador XML CFDI", layout="wide")
     st.title("Consolidador de facturas XML CFDI")
-    st.caption("Sube varios XML CFDI y descarga un Excel unico con todas las partidas.")
+    st.caption("Sube varios XML CFDI y descarga un Excel unico con todas las partidas encontradas dentro del XML.")
 
     uploaded = st.file_uploader("Archivos XML", type=["xml"], accept_multiple_files=True)
-
     if not uploaded:
         st.info("Sube uno o varios XML para iniciar.")
         return
 
     all_rows: List[Dict[str, object]] = []
     debug_rows: List[Dict[str, object]] = []
-
     for f in uploaded:
         rows, dbg = parse_xml_bytes(f.name, f.getvalue())
         all_rows.extend(rows)
         debug_rows.append(dbg)
 
-    debug_df = pd.DataFrame(debug_rows)
     st.subheader("Debug de procesamiento")
-    st.dataframe(debug_df, use_container_width=True)
+    st.dataframe(pd.DataFrame(debug_rows), use_container_width=True)
 
     df = pd.DataFrame(all_rows, columns=FINAL_COLUMNS)
     st.subheader("Preview consolidado")
@@ -313,10 +326,9 @@ def main():
         st.warning("No se generaron filas. Revisa errores en el debug.")
         return
 
-    excel_bytes = dataframe_to_excel_bytes(df)
     st.download_button(
         "Descargar Excel consolidado",
-        data=excel_bytes,
+        data=dataframe_to_excel_bytes(df),
         file_name="facturas_consolidado.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
