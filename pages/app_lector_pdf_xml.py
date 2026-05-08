@@ -483,7 +483,7 @@ def parse_xml_file(file_name: str, xml_bytes: bytes) -> Tuple[List[Dict[str, Any
         return [], debug
 
 
-# ===================== STREAMLIT UI =====================
+# ===================== STREAMLIT UI PARA CARPETA pages/ =====================
 
 def render_result(rows: List[Dict[str, Any]], debug_rows: List[Dict[str, Any]], file_name: str):
     df = rows_to_df(rows)
@@ -501,7 +501,7 @@ def render_result(rows: List[Dict[str, Any]], debug_rows: List[Dict[str, Any]], 
 
 
 def page_pdf():
-    st.title("Lector de PDF")
+    st.subheader("Lector de PDF")
     st.caption("Formatos soportados: K9, ROYAN, WASH N CROSS y ANA CECILIA.")
     files = st.file_uploader("Sube tus facturas PDF", type=["pdf"], accept_multiple_files=True, key="pdf_files")
     force = st.selectbox("Formato", ["Autodetectar", "K9", "ROYAN", "WASH", "ANA_CECILIA"], index=0)
@@ -517,7 +517,7 @@ def page_pdf():
 
 
 def page_xml():
-    st.title("Lector de XML")
+    st.subheader("Lector de XML")
     st.caption("Lee CFDI XML. En WASH, #REPORTE, # DE UNIDAD y fecha de servicio se dejan vacios porque no vienen en el XML.")
     files = st.file_uploader("Sube tus XML", type=["xml"], accept_multiple_files=True, key="xml_files")
     if st.button("Procesar XML", type="primary") and files:
@@ -533,20 +533,17 @@ def page_xml():
 def main():
     if st is None:
         raise RuntimeError("Streamlit no esta instalado. Instala con: pip install streamlit pdfplumber pandas openpyxl")
-    st.set_page_config(page_title="Lector PDF/XML", layout="wide")
-    st.markdown("## Consolidador de facturas")
-    try:
-        pg = st.navigation([
-            st.Page(page_pdf, title="Lector PDF", icon="📑"),
-            st.Page(page_xml, title="Lector XML", icon="🧾"),
-        ], position="top")
-        pg.run()
-    except Exception:
-        tab_pdf, tab_xml = st.tabs(["📑 Lector PDF", "🧾 Lector XML"])
-        with tab_pdf:
-            page_pdf()
-        with tab_xml:
-            page_xml()
+
+    # Esta version esta pensada para guardarse dentro de /pages.
+    # No usa st.navigation porque tu app ya se despliega por multipage pages/.
+    st.title("Lector PDF / XML")
+    st.caption("Selecciona una pestana: PDF o XML. La salida conserva la misma estructura final de columnas.")
+
+    tab_pdf, tab_xml = st.tabs(["Lector PDF", "Lector XML"])
+    with tab_pdf:
+        page_pdf()
+    with tab_xml:
+        page_xml()
 
 
 if __name__ == "__main__":
